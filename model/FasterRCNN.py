@@ -1,19 +1,24 @@
 #coding:utf-8
-
-
+import torch
 from torch import nn
+import torch.nn.functional as F
 from torchvision.models import vgg16
 
+from utils import *
+from target import *
+from loss import *
 
 
 def decompose_vgg16(ckpt_path):
     vgg16_net = vgg16()
     vgg16_net.load_state_dict(torch.load(ckpt_path))
 
+    use_drop = True
+
     features = list(vgg16_net.features)[:30]
     # freeze top four conv
     for layer in features[:10]:
-        for p in layer.paramters():
+        for p in layer.parameters():
             p.requires_grad = False
 
     classifier = vgg16_net.classifier
@@ -24,233 +29,324 @@ def decompose_vgg16(ckpt_path):
         del classifier[2]
 
     features = nn.Sequential(*features)
+
     classifier = nn.Sequential(*classifier)
-
     return features, classifier
+    # return features
 
-
-
-#==================================================================================================
-def loc2bbox(src_bbox, loc):
-    if (src_bbox.shape[0] == 0):
-        return np.zeos((0, 4), dtype=loc.dtype)
-
-    src_bbox = src_bbox.astype(src_bbox.dtype, copy=False)
-    src_height = src_bbox[:, 2] - src_bbox[:, 0]
-    src_width  = src_bbox[:, 3] - src_bbox[:, 1]
-    src_ctr_y  = src_bbox[:, 0] + 0.5 * src_height
-    src_ctr_x  = src_bbox[:, 1] + 0.5 * src_width
-
-    dy = loc[:, 0::4]
-    dx = loc[:, 1::4]
-    dh = loc[:, 2::4]
-    dw = loc[:, 3::4]
-
-    ctr_y = dy * src_height[:, np.newaxis] + src_ctr_y[:, np.newaxis]
-    ctr_x = dx * src_width[:, np.newaxis] + src_ctr_x[:, np.newaxis]
-    h = np.exp(dh) * src_height[:, np.newaxis]
-    w = np.exp(dw) * src_width[:, np.newaxis]
-
-    dst_bbox = np.zeros(loc.shape, dtype=loc.dtype)
-    dst_bbox[:, 0::4] = ctr_y - 0.5 * h
-    dst_bbox[:, 1::4] = ctr_x - 0.5 * w
-    dst_bbox[:, 2::4] = ctr_y + 0.5 * h
-    dst_bbox[:, 3::4] = ctr_x + 0.5 * w
-
-    return dst_bbox
-
-
-def non_maximum_suppression(bbox, thresh, score=None, limit=None):
-    if (len(bbox) == 0):
-        return np.zeros((0,), dtype=np.int32)
-
-    n_bbox = bbox.shape[0]
-
-    if (score is not None):
-        order = score.argsort()[::-1].astype(np.int32)
-    else:
-        order = np.arange(n_bbox, dtype=np.int32)
-
-    sorted_bbox = bbox[order, :]
-    selec, n_selec = 
-
-
-
-
-class ProposalCreator:
-    def __init__(self,
-        parent_model,
-        nms_thresh=0.7,
-        n_train_pre_nms=12000,
-        n_train_post_nms=2000,
-        n_test_pre_nms=6000,
-        n_test_post_nms=300,
-        min_size=16
-        ):
-        self.parent_model = parent_model
-        self.nms_thresh = nms_thresh
-        self.n_train_pre_nms = n_train_pre_nms
-        self.n_train_post_nms = n_train_post_nms
-        self.n_test_pre_nms = n_test_pre_nms
-        self.n_test_post_nms = n_test_post_nms
-
-    # define __call__ function, make the class a runnable class
-    def __call__(self, loc, score, anchor, img_size, scale=1.):
-        if (self.parent_model.training):
-            n_pre_nms = self.n_train_pre_nms
-            n_post_nms = self.n_train_post_nms
-        else:
-            n_pre_nms = self.n_test_pre_nms
-            n_post_nms = self.n_test_post_nms
-
-        roi = loc2bbox(anchor, loc)
-
-        roi[:, slice(0, 4, 2)] = np.clip(roi[:, slice(0, 4, 2)], 0, img_size[0])
-        roi[:, slice(1, 4, 2)] = np.clip(roi[:, slice(1, 4, 2)], 0, img_size[1])
-
-        min_size = self.min_size * scale
-        hs = roi[:, 2] - roi[:, 0]
-        ws = roi[:, 3] - roi[:, 1]
-        keep = np.where((hs >= min_size) & (ws >= min_size))[0]
-        roi = roi[keep, :]
-        score = score[keep]
-
-        order = score.ravel().argsort()[::-1]
-        if (n_pre_nms > 0):
-            order = order[:n_pre_nms]
-        roi = roi[order, :]
-
-        keep = non_maximum_suppression()
-
-        if (n_post_nms > 0):
-            keep = keep[:n_post_nms]
-        roi = roi[keep]
-
-        return roi
-
-
-
-#==================================================================================================
-""" Note:
-    Generate approximiately (-h/2, -w/2, h/2, w/2) anchor box.
-"""
 
 def normal_init(m, mean, stddev, truncated=False):
-    """
-    weight initalizer: truncated normal and random normal.
-    """
+    """ weight initalizer: truncated normal and random normal """
     if truncated:
         m.weight.data.normal_().fmod_(2).mul_(stddev).add_(mean)  # not a perfect approximation
     else:
         m.weight.data.normal_(mean, stddev)
         m.bias.data.zero_()
 
+
 class RegionProposalNetwork(nn.Module):
 
     def __init__(self, 
-        in_channels=512, 
-        mid_channels=512, 
-        feature_stride=16,
-        anchor_ratios=[0.5, 1, 2],
-        anchor_scales=[8, 16, 32]
-        ):
+            in_channels=512, 
+            mid_channels=512, 
+            feature_stride=16,
+            anchor_ratios=[0.5, 1, 2],
+            anchor_scales=[8, 16, 32],
+            n_anchor = 9
+            ):
         super(RegionProposalNetwork, self).__init__()
-        
-        self.anchor_base = self.generate_base_anchors(feature_stride, anchor_ratios, anchor_scales)
 
-        self.feature_stride=feature_stride
         self.conv1 = nn.Conv2d(in_channels, mid_channels, 3, 1, 1)
         self.score = nn.Conv2d(mid_channels,  n_anchor*2, 1, 1, 0)
         self.locate = nn.Conv2d(mid_channels, n_anchor*4, 1, 1, 0)
+
+        self.n_anchor = n_anchor
 
         normal_init(self.conv1,  0, 0.01)
         normal_init(self.score,  0, 0.01)
         normal_init(self.locate, 0, 0.01)
 
 
-    def forward(self, x, img_size, scale=1.):
+    def forward(self, x):
         n, _, hh, ww = x.shape
-        anchor = emuerate_shifted_anchor(np.array(self.anchor_base), self.feature_stride, hh, ww)
-        n_anchor = anchor.shape[0] // (hh * ww) # candidate anchors per location
 
         x = F.relu(self.conv1(x))
         
         rpn_locs = self.locate(x)
-        rpn_locs = rpn_locs.permute(0, 2, 3, 1).contiguous().view(n, -1, 4)
         
         rpn_scores = self.score(x)
-        rpn_scores = rpn_scores.permute(0, 2, 3, 1).contiguous().view(n, -1, 2)
-        rpn_softmax_scores = F.softmax(rpn_scores.view(n, hh, ww, n_anchor, 2), dim=4)
+        rpn_scores_reshape = rpn_scores.permute(0, 2, 3, 1).contiguous()
+        rpn_softmax_scores = F.softmax(rpn_scores_reshape.view(n, hh, ww, self.n_anchor, 2), dim=4)
 
-        rpn_fg_scores = rpn_softmax_scores[:,:,:,:,1].contiguous()
-        rpn_fg_scores = rpn_fg_scores.view(n, -1)
+        rpn_softmax_scores = rpn_softmax_scores.contiguous().view(n, hh, ww, self.n_anchor*2).permute(0,3,1,2)
 
-        rois = list()
-        roi_indices = list()
-
-        for i in range(n):
-            roi = self.proposal_layer()
-            batch_index = i * np.ones((len(roi),), dtype=np.int32)
-            rois.append(roi)
-            roi_indices.append(batch_index)
-
-        rois = np.concatenation(rois, axis=0)
-        roi_indices = np.concatenation(roi_indices, axis=0)
-
-        return rpn_locs, rpn_scores, rois, roi_indices, anchor
+        return rpn_locs, rpn_scores, rpn_softmax_scores
 
 
-    def generate_base_anchors(self,
-        base_size=16,
-        anchor_ratios=[0.5, 1, 2],
-        anchor_scales=[8, 16, 32]
-        ):
-        px = base_size / 2
-        py = base_size / 2
-        anchor_base = np.zeros(((len(anchor_ratios) * len(anchor_scales)), 4), dtype=np.float32)
-        for i in range(len(anchor_ratios)):
-            for j in range(len(anchor_scales)):
-                h = base_size * anchor_scales[j] * np.sqrt(anchor_ratios[i])
-                w = base_size * anchor_scales[j] * np.sqrt(1. / anchor_ratios[i])
+class ProposalLayer(object):
 
-                index = i * len(anchor_scales) + j
-                anchor_base[index, 0] = py - h / 2.
-                anchor_base[index, 1] = px - w / 2.
-                anchor_base[index, 2] = py + h / 2.
-                anchor_base[index, 3] = px + w / 2.
+    def __init__(self):
+        self.feat_stride = 16
+        self.anchor_scales = [8, 16, 32]
+        self.anchor_ratios = [0.5, 1., 2.]
+        self.anchors = generate_anchors(self.feat_stride, self.anchor_scales, self.anchor_ratios)
+        self.n_anchors = self.anchors.shape[0]
 
-        return anchor_base
+    def __call__(self, STATE, bbox_deltas, scores, im_info):
+        
+        if ('Train' == STATE):
+            pre_nms_topN = 12000
+            post_nms_topN = 2000
+            nms_thresh = 0.7
+            min_size = 16
+        else:
+            pre_nms_topN = 6000
+            post_nms_topN = 300
+            nms_thresh = 0.7
+            min_size = 16
 
-    ''' Note:
-        The anchor_base, only has the (-h/2, w/2, h/2, w/2).
-        To be used as real anchors, the anchor_base should be shifted,
-        that is, to add offset(x, y)
-    '''
-    def emuerate_shifted_anchor(anchor_base, feature_stride, height, width):
-        shift_y = np.arange(0, height*feature_stride, feature_stride)
-        shift_x = np.arange(0, width*fetaure_stride, fetaure_stride)
+        height, width = scores.shape[-2:]
+
+        shift_x = np.arange(0, width) * self.feat_stride
+        shift_y = np.arange(0, height) * self.feat_stride
         shift_x, shift_y = np.meshgrid(shift_x, shift_y)
+        shifts = np.vstack((shift_x.ravel(), shift_y.ravel(), 
+                            shift_x.ravel(), shift_y.ravel())).transpose()
 
-        shift_xy = np.stack((shift_y.ravel(), shift_x.ravel(), shift_y.ravel(), shift_x.ravel()), axis=1)
+        # add shift to anchor
+        A = self.n_anchors
+        K = shifts.shape[0]
+        anchors = self.anchors.reshape((1, A, 4)) + \
+                                        shifts.reshape((1, K, 4)).transpose((1, 0, 2))
+        anchors = anchors.reshape((K * A, 4))
+        print('anchors', anchors.shape)
 
-        A = anchor_base.shape[0]
-        K = shift.shape[0]
+        # tensor to numpy
+        bbox_deltas = bbox_deltas.detach().numpy()
+        scores = scores.detach().numpy()
+        # Note: should be carefully think
+        scores = scores[:, 1::2, :, :]
 
-        anchor = anchor_base.reshape((1, A, 4)) + shift.reshape((1, K, 4)).transpose(1, 0, 2)
-        anchor = anchor.reshape((K*A, 4)).astype(np.float32)
-        return anchor
+        bbox_deltas = bbox_deltas.transpose((0, 2, 3, 1)).reshape((-1, 4))
+        scores = scores.transpose((0, 2, 3, 1)).reshape((-1, 1))
+
+        print('bbox_deltas', bbox_deltas.shape)
+        print('scores', scores.shape)
+
+        # 1. convert anchor to proposals, via bbox transformation
+        proposals = bbox_transform_inv(anchors, bbox_deltas)
+        print('proposals', proposals.shape)
+
+        # 2. clip to image
+        proposals = clip_boxes(proposals, im_info[:2])
+        print('proposals', proposals.shape)
 
 
+        # 3. remove small predicted boxes
+        keep = filter_boxes(proposals, min_size * im_info[2])
+        print('keep', keep.shape)
+        proposals = proposals[keep, :]
+        scores = scores[keep]
+
+        # NMS
+        # 4.1 sort
+        order = scores.ravel().argsort()[::-1]
+        print('order', order.shape)
+
+        if pre_nms_topN > 0:
+            order = order[:pre_nms_topN]
+        proposals = proposals[order, :]
+        scores = scores[order]
+
+        print('proposals', proposals.shape)
+        print('nms_thresh', nms_thresh)
+        print('scores', scores.shape)
+
+        # 4.2 nms
+        keep = my_non_maximum_suppression(proposals, nms_thresh, scores)
+        if (post_nms_topN > 0):
+            keep = keep[:post_nms_topN]
+        print('nms keep', keep)
+
+        proposals = proposals[keep, :]
+        scores = scores[keep]
+
+        # 5. output rois blob
+        # only support a single input image, batch_indexes are 0
+        batch_indexes = np.zeros((proposals.shape[0], 1), dtype=np.float32)
+        roi = np.hstack((batch_indexes, proposals.astype(np.float32, copy=False)))
+        
+        return roi
+
+
+class RoIPoolingLayer(nn.Module):
+    def __init__(self, pooled_h=7, pooled_w=7, spatial_scale=0.0625, pool_type='MAX'):
+
+        super(RoIPoolingLayer, self).__init__()
+
+        self.pooled_h = pooled_h
+        self.pooled_w = pooled_w
+        self.spatial_scale = spatial_scale
+        self.pool_type = pool_type
+
+    def forward(self, features, rois):
+        output = []
+        rois = torch.Tensor(rois)
+        num_rois = rois.contiguous().view(-1, 5).shape[0]
+
+        if (num_rois == 0):
+            return torch.Tensor([])
+
+        h, w = features.shape[-2:]
+
+        rois[:, 1:].mul_(self.spatial_scale)
+        rois = rois.long()
+
+        size = (self.pooled_h, self.pooled_w)
+
+        for i in range(num_rois):
+            roi = rois[i]
+            batch_idx = roi[0]
+
+            print('roi', roi)
+            im = features[batch_idx, :, roi[2]:(roi[4]+1), roi[1]:(roi[3]+1)]
+            print('im', im.shape)
+            print('size', size)
+
+            if ('MAX' == self.pool_type):                
+                output.append(F.adaptive_max_pool2d(im, size))
+     
+        output = torch.stack(output, 0)
+
+        return output
+
+
+class ODetector(nn.Module):
+
+    def __init__(self, classifier, n_class):
+        # n_class includes the background
+        super(ODetector, self).__init__()
+
+        self.classifier = classifier
+        self.cls_loc = nn.Linear(4096, n_class * 4)
+        self.score = nn.Linear(4096, n_class)
+        self.n_class = n_class
+
+        normal_init(self.cls_loc, 0, 0.001)
+        normal_init(self.score, 0, 0.01)
+
+    def forward(self, rois):
+        n_rois = rois.shape[0]
+        if (0 == n_rois):
+            return torch.Tensor([]), torch.Tensor([])
+        rois = rois.view(n_rois,-1)
+        fc7 = self.classifier(rois)
+        roi_cls_locs = self.cls_loc(fc7)
+        roi_scores = self.score(fc7)
+        return roi_cls_locs, roi_scores
 
 
 class FasterRCNN_VGG16(nn.Module):
 
     def __init__(self,
+                 vgg16_ckpt,
                  n_class=20, 
                  anchor_ratios=[0.5, 1, 2],
                  anchor_scales=[8, 16, 32]):
-        extractor, classifier = decompose_vgg16()
 
-        rpn = RegionProposalNetwork(512, 512, 
+        super(FasterRCNN_VGG16, self).__init__()
+
+        self.Extractor, self.Classifier = decompose_vgg16(vgg16_ckpt)
+
+        self.RPN = RegionProposalNetwork(512, 512, 
                                     anchor_ratios=anchor_ratios,
                                     anchor_scales=anchor_scales)
+
+        self.Proposal = ProposalLayer()
+
+        self.RoIPooling = RoIPoolingLayer()
+
+        self.Detector = ODetector(self.Classifier, n_class+1)
+
+        self.AnchorTarget = AnchorTargetLayer()
+
+        self.ProposalTarget = ProposalTargetLayer()
+
+
+    # im_info: [h, w, scale]
+    def inference(self, x, im_info, gt_bboxes):
+        features = self.Extractor(x)
+        print('features', features.shape)
+
+        rpn_locs, rpn_scores, rpn_softmax_scores = self.RPN(features)
+        print('rpn_locs', rpn_locs.shape)
+        print('rpn_scores', rpn_scores.shape)
+        print('rpn_softmax_scores', rpn_softmax_scores.shape)
+
+        roi = self.Proposal('Train', rpn_locs, rpn_softmax_scores, im_info)
+        print('roi', roi.shape)
+
+        rois_p = self.RoIPooling(features, roi)
+        print('rois_p', rois_p.shape)
+
+        roi_locs, roi_scores = self.Detector(rois_p)
+        print('roi_locs', roi_locs.shape)
+        print('roi_scores', roi_scores.shape)
+
+        print("# AnchorTarget!")
+        rpn_labels, rpn_bbox_targets, rpn_bbox_inside_weights, \
+            rpn_bbox_outside_weights = self.AnchorTarget(rpn_scores, gt_bboxes, x, im_info)
+
+        print('rpn_labels', rpn_labels.shape)
+        print('rpn_bbox_targets', rpn_bbox_targets.shape)
+        print('rpn_bbox_inside_weights', rpn_bbox_inside_weights.shape)
+        print('rpn_bbox_outside_weights', rpn_bbox_outside_weights.shape)
+
+        print('# ProposalTarget')
+        rois, labels, bbox_targets, bbox_inside_weights, bbox_outside_weights \
+            =  self.ProposalTarget(roi, gt_bboxes)
+
+        print('rois', rois.shape)
+        print('labels', labels.shape)
+        print('bbox_targets', bbox_targets.shape)
+        print('bbox_inside_weights', bbox_inside_weights.shape)
+        print('bbox_outside_weights', bbox_outside_weights.shape)
+
+
+
+    def train_step(self):
+        print("train_step")
+
+
+
+    def create_rois(self, config):
+     
+        rois = torch.rand((config[2], 5))
+        rois[:, 0] = rois[:, 0] * config[0]
+        rois[:, 1:] = rois[:, 1:] * config[1]
+        for j in range(config[2]):
+            max_, min_ = max(rois[j, 1], rois[j, 3]), min(rois[j, 1], rois[j, 3])
+            rois[j, 1], rois[j, 3] = min_, max_
+            max_, min_ = max(rois[j, 2], rois[j, 4]), min(rois[j, 2], rois[j, 4])
+            rois[j, 2], rois[j, 4] = min_, max_
+        rois = torch.floor(rois)
+        return rois
+
+
+    def testing(self):
+
+        config = [1, 50, 3]
+        T = 5
+        has_backward = True
+
+        roi_pooling = RoIPoolingLayer()
+
+        x = torch.rand((config[0], 512, config[1], config[1]))
+        rois = self.create_rois(config)
+    
+        for t in range(T):
+            output = roi_pooling(x,rois)
+            print('roi', output.shape)
+            roi_locs, roi_scores = self.Detector(output)
+            print('roi_locs', roi_locs.shape)
+            print('roi_scores', roi_scores.shape)

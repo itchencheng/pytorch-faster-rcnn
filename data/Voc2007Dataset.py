@@ -5,6 +5,9 @@ import os
 import PIL.Image as Image
 import re
 
+import numpy as np
+
+
 VOC_BBOX_LABEL_NAMES = (
     'aeroplane',
     'bicycle',
@@ -114,5 +117,9 @@ class Voc2007Dataset(Dataset):
 
         fi.close()
 
-        return img, bbox, label, difficult
+        # return img, bbox, label, difficult
+
+        for idx in range(len(label)):
+            bbox[idx].extend(label)
+        return img, bbox, difficult
 
