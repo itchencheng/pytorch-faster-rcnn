@@ -272,9 +272,10 @@ class FasterRCNN_VGG16(nn.Module):
 
         self.ProposalTarget = ProposalTargetLayer()
 
+        self.SmoothL1 = WeightedSmoothL1Loss()
 
     # im_info: [h, w, scale]
-    def inference(self, x, im_info, gt_bboxes):
+    def inference(self, x, im_info):
         features = self.Extractor(x)
         print('features', features.shape)
 
@@ -293,60 +294,37 @@ class FasterRCNN_VGG16(nn.Module):
         print('roi_locs', roi_locs.shape)
         print('roi_scores', roi_scores.shape)
 
-        print("# AnchorTarget!")
+
+    def train_step(self, x, im_info, gt_bboxes):
+        features = self.Extractor(x)
+        print('features', features.shape)
+
+        rpn_locs, rpn_scores, rpn_softmax_scores = self.RPN(features)
+        print('rpn_locs', rpn_locs.shape)
+        print('rpn_scores', rpn_scores.shape)
+        print('rpn_softmax_scores', rpn_softmax_scores.shape)
+
         rpn_labels, rpn_bbox_targets, rpn_bbox_inside_weights, \
             rpn_bbox_outside_weights = self.AnchorTarget(rpn_scores, gt_bboxes, x, im_info)
-
         print('rpn_labels', rpn_labels.shape)
         print('rpn_bbox_targets', rpn_bbox_targets.shape)
         print('rpn_bbox_inside_weights', rpn_bbox_inside_weights.shape)
         print('rpn_bbox_outside_weights', rpn_bbox_outside_weights.shape)
 
-        print('# ProposalTarget')
+        roi = self.Proposal('Train', rpn_locs, rpn_softmax_scores, im_info)
+        print('roi', roi.shape)
+
         rois, labels, bbox_targets, bbox_inside_weights, bbox_outside_weights \
             =  self.ProposalTarget(roi, gt_bboxes)
-
         print('rois', rois.shape)
         print('labels', labels.shape)
         print('bbox_targets', bbox_targets.shape)
         print('bbox_inside_weights', bbox_inside_weights.shape)
         print('bbox_outside_weights', bbox_outside_weights.shape)
 
+        rois_p = self.RoIPooling(features, rois)
+        print('rois_p', rois_p.shape)
 
-
-    def train_step(self):
-        print("train_step")
-
-
-
-    def create_rois(self, config):
-     
-        rois = torch.rand((config[2], 5))
-        rois[:, 0] = rois[:, 0] * config[0]
-        rois[:, 1:] = rois[:, 1:] * config[1]
-        for j in range(config[2]):
-            max_, min_ = max(rois[j, 1], rois[j, 3]), min(rois[j, 1], rois[j, 3])
-            rois[j, 1], rois[j, 3] = min_, max_
-            max_, min_ = max(rois[j, 2], rois[j, 4]), min(rois[j, 2], rois[j, 4])
-            rois[j, 2], rois[j, 4] = min_, max_
-        rois = torch.floor(rois)
-        return rois
-
-
-    def testing(self):
-
-        config = [1, 50, 3]
-        T = 5
-        has_backward = True
-
-        roi_pooling = RoIPoolingLayer()
-
-        x = torch.rand((config[0], 512, config[1], config[1]))
-        rois = self.create_rois(config)
-    
-        for t in range(T):
-            output = roi_pooling(x,rois)
-            print('roi', output.shape)
-            roi_locs, roi_scores = self.Detector(output)
-            print('roi_locs', roi_locs.shape)
-            print('roi_scores', roi_scores.shape)
+        roi_locs, roi_scores = self.Detector(rois_p)
+        print('roi_locs', roi_locs.shape)
+        print('roi_scores', roi_scores.shape)

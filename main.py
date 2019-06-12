@@ -73,8 +73,8 @@ def test_one_image(img_idx):
     img_info = (img.shape[-2], img.shape[-1], im_scale)
     print('img_info', img_info)
 
-    y = cnn_model.inference(img, img_info, gt_bboxes)
-    # y = cnn_model.testing()
+    # y = cnn_model.inference(img, img_info)
+    y = cnn_model.train_step(img, img_info, gt_bboxes)
     print("# complete!!!!!")        
 
 

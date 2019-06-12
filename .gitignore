@@ -1,0 +1,3 @@
+data/*.pyc
+model/*.pyc
+model/vgg16
