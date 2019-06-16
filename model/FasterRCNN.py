@@ -8,6 +8,10 @@ from utils import *
 from target import *
 from loss import *
 
+from ProposalLayer import *
+from RoIPoolingLayer import *
+from RPN import *
+
 
 def decompose_vgg16(ckpt_path):
     vgg16_net = vgg16()
@@ -33,192 +37,6 @@ def decompose_vgg16(ckpt_path):
     classifier = nn.Sequential(*classifier)
     return features, classifier
     # return features
-
-
-def normal_init(m, mean, stddev, truncated=False):
-    """ weight initalizer: truncated normal and random normal """
-    if truncated:
-        m.weight.data.normal_().fmod_(2).mul_(stddev).add_(mean)  # not a perfect approximation
-    else:
-        m.weight.data.normal_(mean, stddev)
-        m.bias.data.zero_()
-
-
-class RegionProposalNetwork(nn.Module):
-
-    def __init__(self, 
-            in_channels=512, 
-            mid_channels=512, 
-            feature_stride=16,
-            anchor_ratios=[0.5, 1, 2],
-            anchor_scales=[8, 16, 32],
-            n_anchor = 9
-            ):
-        super(RegionProposalNetwork, self).__init__()
-
-        self.conv1 = nn.Conv2d(in_channels, mid_channels, 3, 1, 1)
-        self.score = nn.Conv2d(mid_channels,  n_anchor*2, 1, 1, 0)
-        self.locate = nn.Conv2d(mid_channels, n_anchor*4, 1, 1, 0)
-
-        self.n_anchor = n_anchor
-
-        normal_init(self.conv1,  0, 0.01)
-        normal_init(self.score,  0, 0.01)
-        normal_init(self.locate, 0, 0.01)
-
-
-    def forward(self, x):
-        n, _, hh, ww = x.shape
-
-        x = F.relu(self.conv1(x))
-        
-        rpn_locs = self.locate(x)
-        
-        rpn_scores = self.score(x)
-        rpn_scores_reshape = rpn_scores.permute(0, 2, 3, 1).contiguous()
-        rpn_softmax_scores = F.softmax(rpn_scores_reshape.view(n, hh, ww, self.n_anchor, 2), dim=4)
-
-        rpn_softmax_scores = rpn_softmax_scores.contiguous().view(n, hh, ww, self.n_anchor*2).permute(0,3,1,2)
-
-        return rpn_locs, rpn_scores, rpn_softmax_scores
-
-
-class ProposalLayer(object):
-
-    def __init__(self):
-        self.feat_stride = 16
-        self.anchor_scales = [8, 16, 32]
-        self.anchor_ratios = [0.5, 1., 2.]
-        self.anchors = generate_anchors(self.feat_stride, self.anchor_scales, self.anchor_ratios)
-        self.n_anchors = self.anchors.shape[0]
-
-    def __call__(self, STATE, bbox_deltas, scores, im_info):
-        
-        if ('Train' == STATE):
-            pre_nms_topN = 12000
-            post_nms_topN = 2000
-            nms_thresh = 0.7
-            min_size = 16
-        else:
-            pre_nms_topN = 6000
-            post_nms_topN = 300
-            nms_thresh = 0.7
-            min_size = 16
-
-        height, width = scores.shape[-2:]
-
-        shift_x = np.arange(0, width) * self.feat_stride
-        shift_y = np.arange(0, height) * self.feat_stride
-        shift_x, shift_y = np.meshgrid(shift_x, shift_y)
-        shifts = np.vstack((shift_x.ravel(), shift_y.ravel(), 
-                            shift_x.ravel(), shift_y.ravel())).transpose()
-
-        # add shift to anchor
-        A = self.n_anchors
-        K = shifts.shape[0]
-        anchors = self.anchors.reshape((1, A, 4)) + \
-                                        shifts.reshape((1, K, 4)).transpose((1, 0, 2))
-        anchors = anchors.reshape((K * A, 4))
-        print('anchors', anchors.shape)
-
-        # tensor to numpy
-        bbox_deltas = bbox_deltas.detach().numpy()
-        scores = scores.detach().numpy()
-        # Note: should be carefully think
-        scores = scores[:, 1::2, :, :]
-
-        bbox_deltas = bbox_deltas.transpose((0, 2, 3, 1)).reshape((-1, 4))
-        scores = scores.transpose((0, 2, 3, 1)).reshape((-1, 1))
-
-        print('bbox_deltas', bbox_deltas.shape)
-        print('scores', scores.shape)
-
-        # 1. convert anchor to proposals, via bbox transformation
-        proposals = bbox_transform_inv(anchors, bbox_deltas)
-        print('proposals', proposals.shape)
-
-        # 2. clip to image
-        proposals = clip_boxes(proposals, im_info[:2])
-        print('proposals', proposals.shape)
-
-
-        # 3. remove small predicted boxes
-        keep = filter_boxes(proposals, min_size * im_info[2])
-        print('keep', keep.shape)
-        proposals = proposals[keep, :]
-        scores = scores[keep]
-
-        # NMS
-        # 4.1 sort
-        order = scores.ravel().argsort()[::-1]
-        print('order', order.shape)
-
-        if pre_nms_topN > 0:
-            order = order[:pre_nms_topN]
-        proposals = proposals[order, :]
-        scores = scores[order]
-
-        print('proposals', proposals.shape)
-        print('nms_thresh', nms_thresh)
-        print('scores', scores.shape)
-
-        # 4.2 nms
-        keep = my_non_maximum_suppression(proposals, nms_thresh, scores)
-        if (post_nms_topN > 0):
-            keep = keep[:post_nms_topN]
-        print('nms keep', keep)
-
-        proposals = proposals[keep, :]
-        scores = scores[keep]
-
-        # 5. output rois blob
-        # only support a single input image, batch_indexes are 0
-        batch_indexes = np.zeros((proposals.shape[0], 1), dtype=np.float32)
-        roi = np.hstack((batch_indexes, proposals.astype(np.float32, copy=False)))
-        
-        return roi
-
-
-class RoIPoolingLayer(nn.Module):
-    def __init__(self, pooled_h=7, pooled_w=7, spatial_scale=0.0625, pool_type='MAX'):
-
-        super(RoIPoolingLayer, self).__init__()
-
-        self.pooled_h = pooled_h
-        self.pooled_w = pooled_w
-        self.spatial_scale = spatial_scale
-        self.pool_type = pool_type
-
-    def forward(self, features, rois):
-        output = []
-        rois = torch.Tensor(rois)
-        num_rois = rois.contiguous().view(-1, 5).shape[0]
-
-        if (num_rois == 0):
-            return torch.Tensor([])
-
-        h, w = features.shape[-2:]
-
-        rois[:, 1:].mul_(self.spatial_scale)
-        rois = rois.long()
-
-        size = (self.pooled_h, self.pooled_w)
-
-        for i in range(num_rois):
-            roi = rois[i]
-            batch_idx = roi[0]
-
-            print('roi', roi)
-            im = features[batch_idx, :, roi[2]:(roi[4]+1), roi[1]:(roi[3]+1)]
-            print('im', im.shape)
-            print('size', size)
-
-            if ('MAX' == self.pool_type):                
-                output.append(F.adaptive_max_pool2d(im, size))
-     
-        output = torch.stack(output, 0)
-
-        return output
 
 
 class ODetector(nn.Module):
@@ -272,7 +90,13 @@ class FasterRCNN_VGG16(nn.Module):
 
         self.ProposalTarget = ProposalTargetLayer()
 
-        self.SmoothL1 = WeightedSmoothL1Loss()
+        # loss
+        self.CELoss_1 = nn.CrossEntropyLoss(ignore_index=-1)
+        self.SmoothL1_1 = WeightedSmoothL1Loss()
+
+        self.CELoss_2 = nn.CrossEntropyLoss()
+        self.SmoothL1_2 = WeightedSmoothL1Loss()
+
 
     # im_info: [h, w, scale]
     def inference(self, x, im_info):
@@ -305,14 +129,27 @@ class FasterRCNN_VGG16(nn.Module):
         print('rpn_softmax_scores', rpn_softmax_scores.shape)
 
         rpn_labels, rpn_bbox_targets, rpn_bbox_inside_weights, \
-            rpn_bbox_outside_weights = self.AnchorTarget(rpn_scores, gt_bboxes, x, im_info)
+            rpn_bbox_outside_weights = self.AnchorTarget(features.shape[-2:], rpn_scores, gt_bboxes, x, im_info)
         print('rpn_labels', rpn_labels.shape)
-        print('rpn_bbox_targets', rpn_bbox_targets.shape)
-        print('rpn_bbox_inside_weights', rpn_bbox_inside_weights.shape)
-        print('rpn_bbox_outside_weights', rpn_bbox_outside_weights.shape)
+        print('rpn_bbox_targets', rpn_bbox_targets.shape, rpn_bbox_targets.dtype)
+        print('rpn_bbox_inside_weights', rpn_bbox_inside_weights.shape, rpn_bbox_inside_weights.dtype)
+        print('rpn_bbox_outside_weights', rpn_bbox_outside_weights.shape, rpn_bbox_outside_weights.dtype)
 
         roi = self.Proposal('Train', rpn_locs, rpn_softmax_scores, im_info)
         print('roi', roi.shape)
+        print('roi', roi)
+
+        shape = rpn_scores.shape
+        rpn_scores = rpn_scores.contiguous().view(-1, 2)
+        print(rpn_scores.shape, rpn_labels.shape)
+        print(type(rpn_scores), type(rpn_labels))
+        print(rpn_scores.dtype, rpn_labels.dtype)
+
+        rpn_cls_loss = self.CELoss_1(rpn_scores, rpn_labels)
+        print(rpn_cls_loss)
+        rpn_loc_loss = self.SmoothL1_1(rpn_locs, rpn_bbox_targets, rpn_bbox_inside_weights, rpn_bbox_outside_weights)
+
+
 
         rois, labels, bbox_targets, bbox_inside_weights, bbox_outside_weights \
             =  self.ProposalTarget(roi, gt_bboxes)
@@ -322,9 +159,32 @@ class FasterRCNN_VGG16(nn.Module):
         print('bbox_inside_weights', bbox_inside_weights.shape)
         print('bbox_outside_weights', bbox_outside_weights.shape)
 
-        rois_p = self.RoIPooling(features, rois)
+        # features_in = features.detach()
+        features_in = features
+
+        rois_p = self.RoIPooling(features_in, rois)
         print('rois_p', rois_p.shape)
 
         roi_locs, roi_scores = self.Detector(rois_p)
         print('roi_locs', roi_locs.shape)
         print('roi_scores', roi_scores.shape)
+
+        cls_loss = self.CELoss_2(roi_scores,
+                                 labels)
+
+        # cls_loss = self.CELoss_2(roi_scores, labels)
+        loc_loss = self.SmoothL1_2(roi_locs, bbox_targets, bbox_inside_weights, bbox_outside_weights)
+
+        total_loss = rpn_loc_loss + rpn_cls_loss + loc_loss + cls_loss
+        print("==rpn_loc_loss", rpn_loc_loss) 
+        print("==rpn_cls_loss", rpn_cls_loss)
+        print("==cls_loss", cls_loss)
+        print("==loc_loss", loc_loss) 
+        print("==total_loss", total_loss)
+
+        # print(self)
+
+        return total_loss
+        # return rpn_loc_loss+rpn_cls_loss
+        # return loc_loss 
+        #return cls_loss

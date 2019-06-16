@@ -1,4 +1,5 @@
 
+import torch
 import numpy as np
 from utils import *
 
@@ -21,7 +22,7 @@ class AnchorTargetLayer(object):
 
         print("init")
 
-    def __call__(self, rpn_cls_score, gt_bboxes, img, im_info):
+    def __call__(self, hw, rpn_cls_score, gt_bboxes, img, im_info):
 
         # input
         # 0 rpn_cls_score 
@@ -29,7 +30,7 @@ class AnchorTargetLayer(object):
         # 2 im_infp 
         # 3 img
         
-        height, width = rpn_cls_score.shape[-2:]
+        height, width = hw
 
         # Enumerate all shifts
         shift_x = np.arange(0, width) * self.feat_stride
@@ -68,8 +69,10 @@ class AnchorTargetLayer(object):
         print('anchors', anchors.shape)
 
         # label: 1 is positive, 0 is negative, -1 is dont care
-        labels = np.empty((len(inds_inside), ), dtype=np.int32)
+        labels = np.empty((len(inds_inside), ), dtype=np.long)
         labels.fill(-1)
+
+        print("gt_bboxes", gt_bboxes.shape)
 
         # calculate iou between anchors/gt_bboxes
         iou_values = calculate_iou(anchors, gt_bboxes[:,:4])
@@ -139,9 +142,10 @@ class AnchorTargetLayer(object):
 
 
         # labels
-        labels = labels.reshape((1, height, width, A)).transpose(0, 3, 1, 2)
-        rpn_labels = labels.reshape((1, 1, A * height, width))
+        #labels = labels.reshape((1, height, width, A)).transpose(0, 3, 1, 2)
+        #rpn_labels = labels.reshape((1, 1, A * height, width))
 
+        rpn_labels = labels
 
         # bbox_targets
         rpn_bbox_targets = bbox_targets \
@@ -159,7 +163,7 @@ class AnchorTargetLayer(object):
         assert rpn_bbox_outside_weights.shape[2] == height
         assert rpn_bbox_outside_weights.shape[3] == width
 
-        return rpn_labels, rpn_bbox_targets, rpn_bbox_inside_weights, rpn_bbox_outside_weights
+        return torch.LongTensor(rpn_labels), torch.Tensor(rpn_bbox_targets), torch.Tensor(rpn_bbox_inside_weights), torch.Tensor(rpn_bbox_outside_weights)
 
 
 
@@ -175,24 +179,30 @@ class ProposalTargetLayer(object):
         self.FG_THRESH = 0.5
 
         self.BG_THRESH_HI = 0.5
-        self.BG_THRESH_LO = 0.1
+        self.BG_THRESH_LO = -0.1
 
         self.num_classes = 21
 
     def __call__(self, all_rois, gt_boxes):
-        # Proposal ROIs (0, x1, y1, x2, y2) coming from RPN
+        
+        # Proposal ROIs (batchIdx, y1, x2, y2, label), coming from RPN
+
         # GT boxes (x1, y1, x2, y2, label)
         
-        # Note: chencheng, not understand
-        '''
+        print("all_rois", type(all_rois))
+        print("gt_boxes", type(gt_boxes))
         # Include ground-truth boxes in the set of candidate rois
         zeros = np.zeros((gt_boxes.shape[0], 1), dtype=gt_boxes.dtype)
+    
+
+        print(zeros.shape)
+        print(gt_boxes[:,:-1].shape)
+
         all_rois = np.vstack(
             (all_rois, np.hstack((zeros, gt_boxes[:, :-1])))
         )
-        '''
-
-        print(gt_boxes)
+        print("all_rois", all_rois)
+        print("gt_boxes", gt_boxes)
 
         num_images = 1
         rois_per_image = self.BATCH_SIZE / num_images
@@ -201,13 +211,16 @@ class ProposalTargetLayer(object):
 
         # calculate iou between roi/gt_bboxes
         iou_values = calculate_iou(all_rois, gt_boxes)
+        print('iou_values',iou_values)
+
         # find its gt_bbox, for each roi
         gt_assignment = iou_values.argmax(axis=1)
         # get the biggest gt_bbox IoU, for each roi
         max_overlaps = iou_values.max(axis=1)
         # the label, for the gt_bboxes
         labels = gt_boxes[gt_assignment, 4]
-        print(labels)
+        print(gt_assignment)
+        print('labels', labels)
 
         # Select foreground RoIs as those with >= FG_THRESH overlap
         #    if a roi has a RoI >= 0.5, it is fore ground.
@@ -215,6 +228,7 @@ class ProposalTargetLayer(object):
         fg_rois_of_this_image = min(fg_rois_per_image, fg_inds.size)
         if fg_inds.size > 0:
             fg_inds = np.random.choice(fg_inds, size=fg_rois_of_this_image, replace=False)
+        print("fg_inds", fg_inds)
 
 
         # Select background RoIs as those within [BG_THRESH_LO, BG_THRESH_HI)
@@ -223,14 +237,15 @@ class ProposalTargetLayer(object):
         bg_rois_of_this_image = rois_per_image - fg_rois_of_this_image
         bg_rois_of_this_image = min(bg_rois_of_this_image, bg_inds.size)
         if bg_inds.size > 0:
-            bg_inds = npr.choice(bg_inds, size=bg_rois_of_this_image, replace=False)
-
+            bg_inds = np.random.choice(bg_inds, size=bg_rois_of_this_image, replace=False)
+        print("bg_inds", bg_inds)
 
         # The indices that we're selecting (both fg and bg)
         keep_inds = np.append(fg_inds, bg_inds)
 
         # Select sampled values from various arrays:
         labels = labels[keep_inds]
+        print("labels", labels)
 
         # Clamp labels for the background RoIs to 0
         labels[fg_rois_of_this_image:] = 0
@@ -239,13 +254,12 @@ class ProposalTargetLayer(object):
 
         # transform bbox
         bbox_target_data = bbox_transform(rois[:, 1:5], gt_boxes[gt_assignment[keep_inds], :4])
-        bbox_target_data = np.hstack((labels[:, np.newaxis],
-                                      bbox_target_data)).astype(np.float32, copy=False)
+        bbox_target_data = np.hstack((bbox_target_data, labels[:, np.newaxis])
+                                      ).astype(np.float32, copy=False)
 
         bbox_targets, bbox_inside_weights = \
             get_bbox_regression_labels(bbox_target_data, self.num_classes)
 
+        bbox_outside_weights = np.array(bbox_inside_weights > 0).astype(np.float32)
 
-        bbox_outside_weights = np.array(bbox_inside_weights > 0)
-
-        return rois, labels, bbox_targets, bbox_inside_weights, bbox_outside_weights
+        return torch.Tensor(rois), torch.LongTensor(labels), torch.Tensor(bbox_targets), torch.Tensor(bbox_inside_weights), torch.Tensor(bbox_outside_weights)

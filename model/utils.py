@@ -2,6 +2,16 @@
 import numpy as np
 
 
+
+def normal_init(m, mean, stddev, truncated=False):
+    """ weight initalizer: truncated normal and random normal """
+    if truncated:
+        m.weight.data.normal_().fmod_(2).mul_(stddev).add_(mean)  # not a perfect approximation
+    else:
+        m.weight.data.normal_(mean, stddev)
+        m.bias.data.zero_()
+        
+
 # Note:
 # ratio = h / w
 # generate anchors
@@ -197,10 +207,7 @@ def calculate_iou(bboxes, refer_bboxes):
 
         iou_value_list.append(iou_value)
 
-    print(iou_value_list[0].shape)
     iou_values = np.vstack(iou_value_list).transpose()
-
-    print('iou_values', iou_values.shape)
 
     return iou_values
 
@@ -230,20 +237,20 @@ def get_bbox_regression_labels(bbox_target_data, num_classes):
         K is the num_of_classes, equal to 21.
 
     '''
-    class_info = bbox_target_data[:, 0]
+    class_info = bbox_target_data[:, 4]
 
     bbox_targets = np.zeros((class_info.size, 4*num_classes), dtype=np.float32)
     
     bbox_inside_weights = np.zeros(bbox_targets.shape, dtype=np.float32)
     
     inds = np.where(class_info > 0)[0]
+    print('inds', inds)
 
     for ind in inds:
-        clas = class_info[ind]
+        clas = int(class_info[ind])
         start = 4 * clas
         end = start + 4
-        
-        bbox_targets[ind, start:end] = bbox_target_data[ind, 1:]
+        bbox_targets[ind, start:end] = bbox_target_data[ind, :4]
         bbox_inside_weights[ind, start:end] = (1., 1., 1., 1.)
 
     return bbox_targets, bbox_inside_weights

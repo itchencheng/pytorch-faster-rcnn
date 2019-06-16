@@ -6,7 +6,7 @@ import PIL.Image as Image
 import re
 
 import numpy as np
-
+import xml.etree.ElementTree as ET
 
 VOC_BBOX_LABEL_NAMES = (
     'aeroplane',
@@ -47,79 +47,51 @@ class Voc2007Dataset(Dataset):
 
         self.dir_path = dir_path
         self.transform = transform
+        self.use_difficult = False
 
     def __len__(self):
         return len(self.ids)
 
     def __getitem__(self, idx):
-        img_id = self.ids[idx]
-        # image
-        img_file = os.path.join(self.dir_path, 'JPEGImages', img_id+'.jpg')
+        id_ = self.ids[idx]
+        print('img_id', id_)
+
+        anno = ET.parse(os.path.join(self.dir_path, 'Annotations', id_ + '.xml'))
+        bbox = list()
+        label = list()
+        difficult = list()
+        for obj in anno.findall('object'):
+            # when in not using difficult split, and the object is
+            # difficult, skipt it.
+            if not self.use_difficult and int(obj.find('difficult').text) == 1:
+                continue
+
+            difficult.append(int(obj.find('difficult').text))
+            bndbox_anno = obj.find('bndbox')
+            # subtract 1 to make pixel indexes 0-based
+            bbox.append([
+                int(bndbox_anno.find(tag).text) - 1
+                for tag in ('xmin', 'ymin', 'xmax', 'ymax')])
+            name = obj.find('name').text.lower().strip()
+            label.append(VOC_BBOX_LABEL_NAMES.index(name))
+        #bbox = np.stack(bbox).astype(np.float32)
+        #label = np.stack(label).astype(np.int32)
+        # When `use_difficult==False`, all elements in `difficult` are False.
+        difficult = np.array(difficult, dtype=np.bool).astype(np.uint8)  # PyTorch don't support np.bool
+
+        # Load a image
+        img_file = os.path.join(self.dir_path, 'JPEGImages', id_ + '.jpg')
         img = Image.open(img_file)
         if (self.transform != None):
             img = self.transform(img)
-        # label
-        annotation_file = os.path.join(self.dir_path, 'Annotations', '%s.xml' %(img_id))
-        name = []
-        label = []
-        pose = []
-        truncate = []
-        difficult = []
-        bbox = []
 
-        fi = open(annotation_file)
-        lines = fi.readlines()
-        for line in lines:
-            line = line.strip()
-            # name
-            pat = '<name>([a-zA-Z]+)</name>'
-            tmp = re.findall(pat, line)
-            if (len(tmp)>=1):
-                tmp = tmp[0]
-                name.append(tmp)
-                label.append(VOC_BBOX_LABEL_NAMES.index(tmp))
+        # if self.return_difficult:
+        #     return img, bbox, label, difficult
 
-            # bbox
-            if (line=='<bndbox>'):
-                bbox.append([])
-                bbox[-1].append(0)
-                bbox[-1].append(0)
-                bbox[-1].append(0)
-                bbox[-1].append(0)
-
-            pat = '<xmin>([0-9]+)</xmin>'
-            tmp = re.findall(pat, line)
-            if (len(tmp)>=1):
-                tmp = tmp[0]
-                bbox[-1][0] = int(tmp)
-            pat = '<ymin>([0-9]+)</ymin>'
-            tmp = re.findall(pat, line)
-            if (len(tmp)>=1):
-                tmp = tmp[0]
-                bbox[-1][1] = int(tmp)
-            pat = '<xmax>([0-9]+)</xmax>'
-            tmp = re.findall(pat, line)
-            if (len(tmp)>=1):
-                tmp = tmp[0]
-                bbox[-1][2] = int(tmp)
-            pat = '<ymax>([0-9]+)</ymax>'
-            tmp = re.findall(pat, line)
-            if (len(tmp)>=1):
-                tmp = tmp[0]
-                bbox[-1][3] = int(tmp)
-
-            # difficult
-            pat = '<difficult>([01])</difficult>'
-            tmp = re.findall(pat, line)
-            if (len(tmp) > 0):
-                difficult.append(int(tmp[0]))
-
-
-        fi.close()
-
-        # return img, bbox, label, difficult
+        assert(len(bbox) == len(label))
 
         for idx in range(len(label)):
-            bbox[idx].extend(label)
-        return img, bbox, difficult
+            bbox[idx].append(label[idx])
+            print("###", bbox[idx])
 
+        return img, bbox, difficult
