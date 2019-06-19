@@ -31,6 +31,7 @@ VOC_BBOX_LABEL_NAMES = (
     'tvmonitor')
 
 
+
 class Voc2007Dataset(Dataset):
     def __init__(self, dir_path, tag='train', transform=None):
         super(Voc2007Dataset, self).__init__()
@@ -92,6 +93,5 @@ class Voc2007Dataset(Dataset):
 
         for idx in range(len(label)):
             bbox[idx].append(label[idx])
-            print("###", bbox[idx])
 
         return img, bbox, difficult

@@ -6,6 +6,9 @@ from torchvision.models import vgg16
 
 from utils import *
 
+# set device
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
 
 class RoIPoolingLayer(nn.Module):
     def __init__(self, pooled_h=7, pooled_w=7, spatial_scale=0.0625, pool_type='MAX'):
@@ -19,8 +22,9 @@ class RoIPoolingLayer(nn.Module):
 
     def forward(self, features, rois):
         # roi format "batch_idx, x, y, x, y"
+        
         output = []
-        rois = torch.Tensor(rois)
+
         num_rois = rois.contiguous().view(-1, 5).shape[0]
 
         if (num_rois == 0):
@@ -28,23 +32,20 @@ class RoIPoolingLayer(nn.Module):
 
         h, w = features.shape[-2:]
 
-        print("rois", rois)
         rois[:, 1:].mul_(self.spatial_scale)
-        print("rois", rois)
         rois = rois.long()
-        print("rois", rois)
         
         size = (self.pooled_h, self.pooled_w)
 
         for i in range(num_rois):
             roi = rois[i]
-            print("-roi", roi)
+            #print("-roi", roi)
             batch_idx = roi[0]
 
-            print('roi', roi)
+            #print('roi', roi)
             im = features[batch_idx, :, roi[2]:(roi[4]+1), roi[1]:(roi[3]+1)]
-            print('im', im.shape)
-            print('size', size)
+            #print('im', im.shape)
+            #print('size', size)
 
             if ('MAX' == self.pool_type):                
                 output.append(F.adaptive_max_pool2d(im, size))

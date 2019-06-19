@@ -136,12 +136,12 @@ def my_non_maximum_suppression(bboxes, nms_thresh, probs):
         return []
 
     max_min_order = np.argsort(probs)[::-1].ravel()
-    print('max_min_order', max_min_order.shape)
+    #print('max_min_order', max_min_order.shape)
     ordered_bboxes = bboxes[max_min_order]
     ordered_probs = probs[max_min_order]
 
-    print('ordered_bboxes', ordered_bboxes.shape)
-    print('ordered_probs', ordered_probs.shape)
+    #print('ordered_bboxes', ordered_bboxes.shape)
+    #print('ordered_probs', ordered_probs.shape)
 
     max_bbox = ordered_bboxes[0]
 
@@ -235,7 +235,6 @@ def get_bbox_regression_labels(bbox_target_data, num_classes):
     The function is to change the target format, to confront with CNN output.
         Make the bbox_target N x (K x 4).
         K is the num_of_classes, equal to 21.
-
     '''
     class_info = bbox_target_data[:, 4]
 
@@ -244,7 +243,6 @@ def get_bbox_regression_labels(bbox_target_data, num_classes):
     bbox_inside_weights = np.zeros(bbox_targets.shape, dtype=np.float32)
     
     inds = np.where(class_info > 0)[0]
-    print('inds', inds)
 
     for ind in inds:
         clas = int(class_info[ind])

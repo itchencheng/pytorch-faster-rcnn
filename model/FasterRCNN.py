@@ -20,6 +20,7 @@ def decompose_vgg16(ckpt_path):
     use_drop = True
 
     features = list(vgg16_net.features)[:30]
+
     # freeze top four conv
     for layer in features[:10]:
         for p in layer.parameters():
@@ -101,90 +102,86 @@ class FasterRCNN_VGG16(nn.Module):
     # im_info: [h, w, scale]
     def inference(self, x, im_info):
         features = self.Extractor(x)
-        print('features', features.shape)
+        #print('features', features.shape)
 
         rpn_locs, rpn_scores, rpn_softmax_scores = self.RPN(features)
         print('rpn_locs', rpn_locs.shape)
         print('rpn_scores', rpn_scores.shape)
         print('rpn_softmax_scores', rpn_softmax_scores.shape)
 
-        roi = self.Proposal('Train', rpn_locs, rpn_softmax_scores, im_info)
+        roi = self.Proposal('Test', rpn_locs, rpn_softmax_scores, im_info)
         print('roi', roi.shape)
 
+        roi = torch.Tensor(roi).to(device)
+
         rois_p = self.RoIPooling(features, roi)
-        print('rois_p', rois_p.shape)
+        print('rois_p', rois_p)
 
         roi_locs, roi_scores = self.Detector(rois_p)
-        print('roi_locs', roi_locs.shape)
-        print('roi_scores', roi_scores.shape)
+        print('roi_locs', roi_locs)
+        print('roi_scores', roi_scores)
+
+        return roi_locs, roi_scores, roi
 
 
     def train_step(self, x, im_info, gt_bboxes):
         features = self.Extractor(x)
-        print('features', features.shape)
 
         rpn_locs, rpn_scores, rpn_softmax_scores = self.RPN(features)
-        print('rpn_locs', rpn_locs.shape)
-        print('rpn_scores', rpn_scores.shape)
-        print('rpn_softmax_scores', rpn_softmax_scores.shape)
+        #print('rpn_locs', rpn_locs.shape)
+        #print('rpn_scores', rpn_scores.shape)
+        #print('rpn_softmax_scores', rpn_softmax_scores.shape)
 
-        rpn_labels, rpn_bbox_targets, rpn_bbox_inside_weights, \
-            rpn_bbox_outside_weights = self.AnchorTarget(features.shape[-2:], rpn_scores, gt_bboxes, x, im_info)
-        print('rpn_labels', rpn_labels.shape)
-        print('rpn_bbox_targets', rpn_bbox_targets.shape, rpn_bbox_targets.dtype)
-        print('rpn_bbox_inside_weights', rpn_bbox_inside_weights.shape, rpn_bbox_inside_weights.dtype)
-        print('rpn_bbox_outside_weights', rpn_bbox_outside_weights.shape, rpn_bbox_outside_weights.dtype)
+        rpn_labels, rpn_bbox_targets, rpn_bbox_inside_weights, rpn_bbox_outside_weights \
+                = self.AnchorTarget(features.shape[-2:], rpn_scores, gt_bboxes, x, im_info)
+        #print('rpn_labels', rpn_labels.shape)
+        #print('rpn_bbox_targets', rpn_bbox_targets.shape, rpn_bbox_targets.dtype)
+        #print('rpn_bbox_inside_weights', rpn_bbox_inside_weights.shape, rpn_bbox_inside_weights.dtype)
+        #print('rpn_bbox_outside_weights', rpn_bbox_outside_weights.shape, rpn_bbox_outside_weights.dtype)
 
         roi = self.Proposal('Train', rpn_locs, rpn_softmax_scores, im_info)
-        print('roi', roi.shape)
-        print('roi', roi)
+        #print('roi', roi.shape)
+        #print('roi', roi)
 
-        shape = rpn_scores.shape
+
+        # rpn loss
         rpn_scores = rpn_scores.contiguous().view(-1, 2)
-        print(rpn_scores.shape, rpn_labels.shape)
-        print(type(rpn_scores), type(rpn_labels))
-        print(rpn_scores.dtype, rpn_labels.dtype)
-
         rpn_cls_loss = self.CELoss_1(rpn_scores, rpn_labels)
-        print(rpn_cls_loss)
         rpn_loc_loss = self.SmoothL1_1(rpn_locs, rpn_bbox_targets, rpn_bbox_inside_weights, rpn_bbox_outside_weights)
-
-
 
         rois, labels, bbox_targets, bbox_inside_weights, bbox_outside_weights \
             =  self.ProposalTarget(roi, gt_bboxes)
-        print('rois', rois.shape)
-        print('labels', labels.shape)
-        print('bbox_targets', bbox_targets.shape)
-        print('bbox_inside_weights', bbox_inside_weights.shape)
-        print('bbox_outside_weights', bbox_outside_weights.shape)
+        #print('rois', rois.shape)
+        #print('labels', labels.shape)
+        #print('bbox_targets', bbox_targets.shape)
+        #print('bbox_inside_weights', bbox_inside_weights.shape)
+        #print('bbox_outside_weights', bbox_outside_weights.shape)
 
-        # features_in = features.detach()
-        features_in = features
-
-        rois_p = self.RoIPooling(features_in, rois)
-        print('rois_p', rois_p.shape)
+        rois_p = self.RoIPooling(features, rois)
+        #print('rois_p', rois_p.shape)
 
         roi_locs, roi_scores = self.Detector(rois_p)
-        print('roi_locs', roi_locs.shape)
-        print('roi_scores', roi_scores.shape)
+        #print('roi_locs', roi_locs.shape)
+        #print('roi_scores', roi_scores.shape)
 
-        cls_loss = self.CELoss_2(roi_scores,
-                                 labels)
 
-        # cls_loss = self.CELoss_2(roi_scores, labels)
+        # detector loss
+        #print("#### Compare")
+        print("roi_scores:")
+        print(roi_scores)
+        print(labels)
+        print("roi_locs:")
+        #print(roi_locs)
+        #print(bbox_targets)
+        cls_loss = self.CELoss_2(roi_scores, labels)
         loc_loss = self.SmoothL1_2(roi_locs, bbox_targets, bbox_inside_weights, bbox_outside_weights)
 
         total_loss = rpn_loc_loss + rpn_cls_loss + loc_loss + cls_loss
-        print("==rpn_loc_loss", rpn_loc_loss) 
-        print("==rpn_cls_loss", rpn_cls_loss)
-        print("==cls_loss", cls_loss)
-        print("==loc_loss", loc_loss) 
+        #print("==rpn_loc_loss", rpn_loc_loss) 
+        #print("==rpn_cls_loss", rpn_cls_loss)
+        #print("==cls_loss", cls_loss)
+        #print("==loc_loss", loc_loss) 
         print("==total_loss", total_loss)
 
-        # print(self)
-
         return total_loss
-        # return rpn_loc_loss+rpn_cls_loss
-        # return loc_loss 
-        #return cls_loss
+

@@ -30,44 +30,40 @@ class ProposalLayer(object):
 
         height, width = scores.shape[-2:]
 
+        # add shift to anchor
         shift_x = np.arange(0, width) * self.feat_stride
         shift_y = np.arange(0, height) * self.feat_stride
         shift_x, shift_y = np.meshgrid(shift_x, shift_y)
         shifts = np.vstack((shift_x.ravel(), shift_y.ravel(), 
                             shift_x.ravel(), shift_y.ravel())).transpose()
-
-        # add shift to anchor
         A = self.n_anchors
         K = shifts.shape[0]
-        anchors = self.anchors.reshape((1, A, 4)) + \
-                                        shifts.reshape((1, K, 4)).transpose((1, 0, 2))
+        anchors = self.anchors.reshape((1, A, 4)) + shifts.reshape((1, K, 4)).transpose((1, 0, 2))
         anchors = anchors.reshape((K * A, 4))
-        print('anchors', anchors.shape)
+        #print('anchors', anchors.shape)
 
         # tensor to numpy
-        bbox_deltas = bbox_deltas.detach().numpy()
-        scores = scores.detach().numpy()
+        bbox_deltas = bbox_deltas.detach().cpu().numpy()
+        scores = scores.detach().cpu().numpy()
+
         # Note: should be carefully think
         scores = scores[:, 1::2, :, :]
 
         bbox_deltas = bbox_deltas.transpose((0, 2, 3, 1)).reshape((-1, 4))
         scores = scores.transpose((0, 2, 3, 1)).reshape((-1, 1))
-
-        print('bbox_deltas', bbox_deltas.shape)
-        print('scores', scores.shape)
+        #print('bbox_deltas', bbox_deltas.shape)
+        #print('scores', scores.shape)
 
         # 1. convert anchor to proposals, via bbox transformation
         proposals = bbox_transform_inv(anchors, bbox_deltas)
-        print('proposals', proposals.shape)
+        #print('proposals', proposals.shape)
 
         # 2. clip to image
         proposals = clip_boxes(proposals, im_info[:2])
-        print('proposals', proposals.shape)
-
+        #print('proposals', proposals.shape)
 
         # 3. remove small predicted boxes
         keep = filter_boxes(proposals, min_size * im_info[2])
-        print('keep', keep.shape)
         proposals = proposals[keep, :]
         scores = scores[keep]
 
@@ -80,16 +76,15 @@ class ProposalLayer(object):
             order = order[:pre_nms_topN]
         proposals = proposals[order, :]
         scores = scores[order]
-
-        print('proposals', proposals.shape)
-        print('nms_thresh', nms_thresh)
-        print('scores', scores.shape)
+        #print('proposals', proposals.shape)
+        #print('nms_thresh', nms_thresh)
+        #print('scores', scores.shape)
 
         # 4.2 nms
         keep = my_non_maximum_suppression(proposals, nms_thresh, scores)
         if (post_nms_topN > 0):
             keep = keep[:post_nms_topN]
-        print('nms keep', keep)
+        #print('nms keep', keep)
 
         proposals = proposals[keep, :]
         scores = scores[keep]
