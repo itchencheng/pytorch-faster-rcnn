@@ -31,8 +31,8 @@ def preprocess(img, g_bbox):
     img = np.transpose(img, (2,0,1))
 
     C, H, W = img.shape
-    scale_min = min_size / np.min((H, W)) # Note: whether should change to float
-    scale_max = max_size / np.max((H, W))
+    scale_min = float(min_size) / np.min((H, W)) # Note: whether should change to float
+    scale_max = float(max_size) / np.max((H, W))
 
     scale = min(scale_min, scale_max)
 
@@ -41,7 +41,7 @@ def preprocess(img, g_bbox):
     img = pytorch_normalze(img)
 
     # bbox
-    g_bbox[:,:4] = g_bbox[:,:4]*scale
+    g_bbox = g_bbox*scale
 
     img_info = (img.shape[-2], img.shape[-1], scale)
 
@@ -61,49 +61,53 @@ def do_training():
     # create model
     cnn_model = FasterRCNN_VGG16('./model/vgg16/vgg16-397923af.pth').to(device)
 
-    cnn_model.load_state_dict(torch.load("model_save.pth")["state"])
-
     learning_rate = 1e-3
     optimizer = torch.optim.SGD(cnn_model.parameters(), lr=learning_rate, momentum=0.9, weight_decay=0.0001)
 
 
     voc2007_dir = '/home/chen/dataset/voc2007/VOC2007'
-    dataset = Voc2007Dataset(voc2007_dir, 'train', None)
+    dataset = Voc2007Dataset(voc2007_dir, 'trainval', None)
 
     dataset_size = len(dataset)
 
-    for epoch in range(15):
-        for img_idx in range(dataset_size):
+    for epoch in range(1):
+        for img_idx in range(1):
 
             '''-------------------------------------------'''
             one_example = dataset[img_idx]
 
-            img, gt_bboxes, difficult = one_example
-            #print('img', img)
-            #print('gt_bboxes', gt_bboxes)
+            img, gt_bboxes, labels, difficult = one_example
 
             gt_bboxes = np.array(gt_bboxes).astype(np.float32)
             img = np.array(img).astype(np.float32)
             
             img, gt_bboxes, img_info = preprocess(img, gt_bboxes)
-            #print('img', np.sum(img>0))
-            #print('gt_bboxes', gt_bboxes)
-            #print('img_info', img_info)
-
 
             img = img[np.newaxis, :]
             img = torch.Tensor(img).to(device)
             '''-------------------------------------------'''
 
+            print('img', img.shape, img_info[-3:-1])
+            print(img)
+
+            print("img_bbox:")
+            print(gt_bboxes)
+
+            print("label_:")
+            print(labels)
+
+            print("scale:")
+            print(img_info[-1])
+
             optimizer.zero_grad()
 
-            loss = cnn_model.train_step(img, img_info, gt_bboxes)
+            loss = cnn_model.train_step(img, gt_bboxes, labels, img_info)
                     
             loss.backward()
             optimizer.step()
 
             if (9 == img_idx%100):
-                save_model(cnn_model, "model_save1.pth")
+                save_model(cnn_model, "model_save2.pth")
 
     print("# complete!!!!!")        
 
@@ -149,7 +153,7 @@ def do_inference():
     # create model
     cnn_model = FasterRCNN_VGG16('./model/vgg16/vgg16-397923af.pth').to(device)
 
-    cnn_model.load_state_dict(torch.load("model_save.pth")["state"])
+    cnn_model.load_state_dict(torch.load("model_save1.pth")["state"])
 
     voc2007_dir = '/home/chen/dataset/voc2007/VOC2007'
     dataset = Voc2007Dataset(voc2007_dir, 'train', None)

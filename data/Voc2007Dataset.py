@@ -72,11 +72,13 @@ class Voc2007Dataset(Dataset):
             # subtract 1 to make pixel indexes 0-based
             bbox.append([
                 int(bndbox_anno.find(tag).text) - 1
-                for tag in ('xmin', 'ymin', 'xmax', 'ymax')])
+                for tag in ('ymin', 'xmin', 'ymax', 'xmax')])
             name = obj.find('name').text.lower().strip()
             label.append(VOC_BBOX_LABEL_NAMES.index(name))
-        #bbox = np.stack(bbox).astype(np.float32)
-        #label = np.stack(label).astype(np.int32)
+        
+        bbox = np.stack(bbox).astype(np.float32)
+        label = np.stack(label).astype(np.int32)
+        
         # When `use_difficult==False`, all elements in `difficult` are False.
         difficult = np.array(difficult, dtype=np.bool).astype(np.uint8)  # PyTorch don't support np.bool
 
@@ -91,7 +93,5 @@ class Voc2007Dataset(Dataset):
 
         assert(len(bbox) == len(label))
 
-        for idx in range(len(label)):
-            bbox[idx].append(label[idx])
 
-        return img, bbox, difficult
+        return img, bbox, label, difficult

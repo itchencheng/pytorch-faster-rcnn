@@ -21,7 +21,7 @@ class RoIPoolingLayer(nn.Module):
         self.pool_type = pool_type
 
     def forward(self, features, rois):
-        # roi format "batch_idx, x, y, x, y"
+        # roi format "batch_idx, y, x, y, x"
         
         output = []
 
@@ -33,7 +33,7 @@ class RoIPoolingLayer(nn.Module):
         h, w = features.shape[-2:]
 
         rois[:, 1:].mul_(self.spatial_scale)
-        rois = rois.long()
+        rois = torch.round(rois).long()
         
         size = (self.pooled_h, self.pooled_w)
 
@@ -42,8 +42,7 @@ class RoIPoolingLayer(nn.Module):
             #print("-roi", roi)
             batch_idx = roi[0]
 
-            #print('roi', roi)
-            im = features[batch_idx, :, roi[2]:(roi[4]+1), roi[1]:(roi[3]+1)]
+            im = features[batch_idx, :, roi[1]:roi[3]+1, roi[2]:roi[4]+1]
             #print('im', im.shape)
             #print('size', size)
 

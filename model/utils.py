@@ -1,6 +1,11 @@
 
 import numpy as np
+import torch
 
+
+def debug(name, x):
+    print(name, x.shape, x.dtype)
+    print(x)
 
 
 def normal_init(m, mean, stddev, truncated=False):
@@ -15,15 +20,15 @@ def normal_init(m, mean, stddev, truncated=False):
 # Note:
 # ratio = h / w
 # generate anchors
-# [[ -84.  -40.  100.   56.]
-#  [-176.  -88.  192.  104.]
-#  [-360. -184.  376.  200.]
-#  [ -56.  -56.   72.   72.]
-#  [-120. -120.  136.  136.]
-#  [-248. -248.  264.  264.]
-#  [ -36.  -80.   52.   96.]
-#  [ -80. -168.   96.  184.]
-#  [-168. -344.  184.  360.]]
+# [[ -37.254834    -82.50966799   53.254834     98.50966799]
+#  [ -82.50966799 -173.01933598   98.50966799  189.01933598]
+#  [-173.01933598 -354.03867197  189.01933598  370.03867197]
+#  [ -56.          -56.           72.           72.        ]
+#  [-120.         -120.          136.          136.        ]
+#  [-248.         -248.          264.          264.        ]
+#  [ -82.50966799  -37.254834     98.50966799   53.254834  ]
+#  [-173.01933598  -82.50966799  189.01933598   98.50966799]
+#  [-354.03867197 -173.01933598  370.03867197  189.01933598]]
 
 def generate_anchors(base_size=16, anchor_scales=[8, 16, 32], anchor_ratios=[0.5, 1., 2.]):
     base_anchor = np.array([0, 0, base_size, base_size])
@@ -36,8 +41,8 @@ def generate_anchors(base_size=16, anchor_scales=[8, 16, 32], anchor_ratios=[0.5
     size = w * h
     size_ratios = size / anchor_ratios
 
-    ws = np.round(np.sqrt(size_ratios))
-    hs = np.round(ws * anchor_ratios)
+    ws = np.sqrt(size_ratios)
+    hs = ws * anchor_ratios
 
     anchor_scales = np.asarray(anchor_scales)
 
@@ -47,12 +52,36 @@ def generate_anchors(base_size=16, anchor_scales=[8, 16, 32], anchor_ratios=[0.5
     ws = ws[:, np.newaxis]
     hs = hs[:, np.newaxis]
 
-    anchors = np.hstack(((ctr_x - 0.5 * ws),
-                         (ctr_y - 0.5 * hs),
-                         (ctr_x + 0.5 * ws),
-                         (ctr_y + 0.5 * hs)))
+    anchors = np.hstack(((ctr_y - 0.5 * hs),
+                         (ctr_x - 0.5 * ws),
+                         (ctr_y + 0.5 * hs),
+                         (ctr_x + 0.5 * ws)))
 
     return anchors
+
+
+def enumerate_shifted_anchor(anchors, feat_stride, height, width):
+    # Enumerate all shifted anchors:
+    #
+    # add A anchors (1, A, 4) to
+    # cell K shifts (K, 1, 4) to get
+    # shift anchors (K, A, 4)
+    # reshape to (K*A, 4) shifted anchors
+
+    # Enumerate all shifts
+    shift_x = np.arange(0, width) * feat_stride
+    shift_y = np.arange(0, height) * feat_stride
+    shift_x, shift_y = np.meshgrid(shift_x, shift_y)
+    shifts = np.vstack((shift_y.ravel(), shift_x.ravel(),
+                        shift_y.ravel(), shift_x.ravel())).transpose()
+
+    A = len(anchors)
+    K = shifts.shape[0]
+    anchors = anchors.reshape((1, A, 4)) + \
+              shifts.reshape((1, K, 4)).transpose((1, 0, 2))
+    all_anchors = anchors.reshape((K * A, 4))
+
+    return all_anchors
 
 
 def bbox_transform(ex_rois, gt_rois):
@@ -112,13 +141,13 @@ def bbox_transform_inv(anchors, deltas):
 
 def clip_boxes(boxes, im_shape):
     # x1 >= 0
-    boxes[:, 0::4] = np.maximum(np.minimum(boxes[:, 0::4], im_shape[1] - 1), 0)
+    boxes[:, 0::4] = np.maximum(np.minimum(boxes[:, 0::4], im_shape[0]), 0)
     # y1 >= 0
-    boxes[:, 1::4] = np.maximum(np.minimum(boxes[:, 1::4], im_shape[0] - 1), 0)
+    boxes[:, 1::4] = np.maximum(np.minimum(boxes[:, 1::4], im_shape[1]), 0)
     # x2 < im_shape[1]
-    boxes[:, 2::4] = np.maximum(np.minimum(boxes[:, 2::4], im_shape[1] - 1), 0)
+    boxes[:, 2::4] = np.maximum(np.minimum(boxes[:, 2::4], im_shape[0]), 0)
     # y2 < im_shape[0]
-    boxes[:, 3::4] = np.maximum(np.minimum(boxes[:, 3::4], im_shape[0] - 1), 0)
+    boxes[:, 3::4] = np.maximum(np.minimum(boxes[:, 3::4], im_shape[1]), 0)
     return boxes
 
 
@@ -130,24 +159,16 @@ def filter_boxes(boxes, min_size):
     return keep
 
 
-def my_non_maximum_suppression(bboxes, nms_thresh, probs):
+def my_non_maximum_suppression(bboxes, nms_thresh):
 
     if (bboxes.shape[0] == 0):
         return []
 
-    max_min_order = np.argsort(probs)[::-1].ravel()
-    #print('max_min_order', max_min_order.shape)
-    ordered_bboxes = bboxes[max_min_order]
-    ordered_probs = probs[max_min_order]
-
-    #print('ordered_bboxes', ordered_bboxes.shape)
-    #print('ordered_probs', ordered_probs.shape)
-
-    max_bbox = ordered_bboxes[0]
+    ordered_bboxes = bboxes
 
     keep = np.array([], np.int64)
 
-    valid_flag = np.ones(len(max_min_order), dtype=np.int32)
+    valid_flag = np.ones(len(bboxes), dtype=np.int32)
 
     i = 0
     for i in range(len(ordered_bboxes)):
@@ -158,7 +179,7 @@ def my_non_maximum_suppression(bboxes, nms_thresh, probs):
         ordered_bbox = ordered_bboxes
 
         two_area = (ordered_bbox[:,2]-ordered_bbox[:,0]) * (ordered_bbox[:,3]-ordered_bbox[:,1]) + \
-                    (max_bbox[2]-max_bbox[0]) * (max_bbox[3]-max_bbox[1])
+                   (max_bbox[2]-max_bbox[0]) * (max_bbox[3]-max_bbox[1])
 
         left = np.maximum(ordered_bbox[:,0], max_bbox[0]*np.ones(ordered_bbox[:,0].shape))
         right = np.minimum(ordered_bbox[:,2], max_bbox[2]*np.ones(ordered_bbox[:,0].shape))
@@ -171,10 +192,9 @@ def my_non_maximum_suppression(bboxes, nms_thresh, probs):
         iou_value = area_i / (two_area - area_i)
 
         thresh_idx = iou_value > nms_thresh
-
         valid_flag[thresh_idx] = 0
 
-        keep = np.append(keep, max_min_order[i])
+        keep = np.append(keep, i)
 
     return keep
 
@@ -210,6 +230,22 @@ def calculate_iou(bboxes, refer_bboxes):
     iou_values = np.vstack(iou_value_list).transpose()
 
     return iou_values
+
+
+def change_to_numpy(data):
+    if isinstance(data, np.ndarray):
+        return data
+    if isinstance(data, torch.Tensor):
+        return data.detach().cpu().numpy()
+
+def change_to_tensor(data, cuda=True):
+    if isinstance(data, np.ndarray):
+        tensor = torch.from_numpy(data)
+    if isinstance(data, torch.Tensor):
+        tensor = data.detach()
+    if cuda:
+        tensor = tensor.cuda()
+    return tensor
 
 
 

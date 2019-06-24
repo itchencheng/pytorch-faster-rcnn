@@ -11,14 +11,6 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 class AnchorTargetLayer(object):
     def __init__(self):
-        self.feat_stride = 16
-        self.anchor_scales = [8, 16, 32]
-        self.anchor_ratios = [0.5, 1., 2.]
-        self.anchors = generate_anchors(self.feat_stride, self.anchor_scales, self.anchor_ratios)
-        self.n_anchors = self.anchors.shape[0]
-
-        self.allowed_border = 0
-
         self.POSITIVE_OVERLAP = 0.7
         self.NEGATIVE_OVERLAP = 0.3
 
@@ -27,48 +19,30 @@ class AnchorTargetLayer(object):
 
         print("init")
 
-    def __call__(self, hw, rpn_cls_score, gt_bboxes, img, im_info):
+    def __call__(self, gt_bboxes, anchors, img_size):
         
-        height, width = hw
+        img_H, img_W = img_size
+        n_anchors = len(anchors)
 
-        # Enumerate all shifts
-        shift_x = np.arange(0, width) * self.feat_stride
-        shift_y = np.arange(0, height) * self.feat_stride
-        shift_x, shift_y = np.meshgrid(shift_x, shift_y)
-        shifts = np.vstack((shift_x.ravel(), shift_y.ravel(),
-                            shift_x.ravel(), shift_y.ravel())).transpose()
-
-        # Enumerate all shifted anchors:
-        #
-        # add A anchors (1, A, 4) to
-        # cell K shifts (K, 1, 4) to get
-        # shift anchors (K, A, 4)
-        # reshape to (K*A, 4) shifted anchors
-        A = self.n_anchors
-        K = shifts.shape[0]
-        anchors = self.anchors.reshape((1, A, 4)) + \
-                  shifts.reshape((1, K, 4)).transpose((1, 0, 2))
-        all_anchors = anchors.reshape((K * A, 4))
-
-        n_all_anchors = int(K * A)
-
-        print('all_anchors', all_anchors.shape)
-
-        # only keep anchors inside image
+        ### only keep anchors inside image
         inds_inside = np.where(
-            (all_anchors[:, 0] >= -self.allowed_border) &
-            (all_anchors[:, 1] >= -self.allowed_border) &
-            (all_anchors[:, 2] < im_info[1] + self.allowed_border) &  # width
-            (all_anchors[:, 3] < im_info[0] + self.allowed_border)    # height
+            (anchors[:, 0] >= 0) &
+            (anchors[:, 1] >= 0) &
+            (anchors[:, 2] <= img_H) &  # width
+            (anchors[:, 3] <= img_W)    # height
         )[0]        
-        anchors = all_anchors[inds_inside, :]
+        anchors = anchors[inds_inside, :]
 
+        ### create labels
         # label: 1 is positive, 0 is negative, -1 is dont care
         labels = np.empty((len(inds_inside), ), dtype=np.long)
         labels.fill(-1)
 
         # calculate iou between anchors/gt_bboxes
-        iou_values = calculate_iou(anchors, gt_bboxes[:,:4])
+        print('anchors', anchors.shape)
+        print('gt_bboxes', gt_bboxes.shape)
+        iou_values = calculate_iou(anchors, gt_bboxes)
+
 
         # Now, begin to set labels
         # 1. find bboxes with high iou for each anchor
@@ -77,6 +51,8 @@ class AnchorTargetLayer(object):
         # 2. find anchor with high iou for each bbox
         gt_argmax_overlaps = iou_values.argmax(axis=0)
         gt_max_overlaps = iou_values[gt_argmax_overlaps, np.arange(iou_values.shape[1])]
+        ################################################################################
+        gt_argmax_overlaps = np.where(iou_values == gt_max_overlaps)[0]
 
 
         # Positive label
@@ -84,7 +60,6 @@ class AnchorTargetLayer(object):
         labels[gt_argmax_overlaps] = 1
         # (ii) the anchor has a IOU > 0.7, for any groundtruth bbox
         labels[max_overlaps > self.POSITIVE_OVERLAP] = 1
-
         # Negative label
         # (iii) non-positive anchors, if IoU ratio < 0.3 for all ground-truth boxes 
         labels[max_overlaps < self.NEGATIVE_OVERLAP] = 0
@@ -108,111 +83,75 @@ class AnchorTargetLayer(object):
 
         # Note:
         #   the target is to make each anchor close to its highest bbox
-        bbox_targets = np.zeros((len(inds_inside), 4), dtype=np.float32)
         bbox_targets = bbox_transform(anchors, gt_bboxes[argmax_overlaps, :])
 
-        # inside weight for smooth_l1_loss
-        #  positive sample is [1, 1, 1, 1]
-        #  neigtive sample is [0, 0, 0, 0] 
-        bbox_inside_weights = np.zeros((len(inds_inside), 4), dtype=np.float32)
-        bbox_inside_weights[labels == 1, :] = np.array([1, 1, 1, 1])
-
-        # outside weigth for smooth_l1_loss
-        bbox_outside_weights = np.zeros((len(inds_inside), 4), dtype=np.float32)
-        num_examples = np.sum(labels >= 0)
-        positive_weights = np.ones((1, 4)) * 1.0 / num_examples
-        negative_weights = np.ones((1, 4)) * 1.0 / num_examples
-        bbox_outside_weights[labels == 1, :] = positive_weights
-        bbox_outside_weights[labels == 0, :] = negative_weights
-
-
         # map up to original set of anchors
-        labels = unmap(labels, n_all_anchors, inds_inside, fill=-1)
-        bbox_targets = unmap(bbox_targets, n_all_anchors, inds_inside, fill=0)
-        bbox_inside_weights = unmap(bbox_inside_weights, n_all_anchors, inds_inside, fill=0)
-        bbox_outside_weights = unmap(bbox_outside_weights, n_all_anchors, inds_inside, fill=0)
+        labels = unmap(labels, n_anchors, inds_inside, fill=-1)
+        bbox_targets = unmap(bbox_targets, n_anchors, inds_inside, fill=0)
 
-        rpn_labels = labels
-
-        # bbox_targets
-        rpn_bbox_targets = bbox_targets.reshape((1, height, width, A * 4)).transpose(0, 3, 1, 2)
-
-        # bbox_inside_weights
-        rpn_bbox_inside_weights = bbox_inside_weights.reshape((1, height, width, A * 4)).transpose(0, 3, 1, 2)
-        assert rpn_bbox_inside_weights.shape[2] == height
-        assert rpn_bbox_inside_weights.shape[3] == width
-
-        # bbox_outside_weights
-        rpn_bbox_outside_weights = bbox_outside_weights.reshape((1, height, width, A * 4)).transpose(0, 3, 1, 2)
-        assert rpn_bbox_outside_weights.shape[2] == height
-        assert rpn_bbox_outside_weights.shape[3] == width
-
-        return torch.LongTensor(rpn_labels).to(device), torch.Tensor(rpn_bbox_targets).to(device), \
-                torch.Tensor(rpn_bbox_inside_weights).to(device), torch.Tensor(rpn_bbox_outside_weights).to(device)
-
+        return bbox_targets, labels
 
 
 
 class ProposalTargetLayer(object):
     def __init__(self):
         # Minibatch size (number of regions of interest [ROIs])
-        self.BATCH_SIZE = 128
+        self.N_SAMPLE = 128
 
         # Fraction of minibatch that is labeled foreground (i.e. class > 0)
-        self.FG_FRACTION = 0.25
+        self.POS_RATIO = 0.25
 
-        self.FG_THRESH = 0.5
+        self.POS_IOU_THRESH = 0.5
 
-        self.BG_THRESH_HI = 0.5
-        self.BG_THRESH_LO = -0.1
+        self.NEG_IOU_THRESH_HI = 0.5
+        self.NEG_IOU_THRESH_LO = 0.0
 
         self.num_classes = 21
 
-    def __call__(self, all_rois, gt_boxes):
-        
+    def __call__(self, all_rois, gt_boxes, labels, loc_normalize_mean, loc_normalize_std):
         # Proposal ROIs (batchIdx, y1, x2, y2, label), coming from RPN
         # GT boxes (x1, y1, x2, y2, label)
 
+        print('all_rois', all_rois.shape, all_rois.dtype)
+        print(all_rois)
+        print('gt_boxes', gt_boxes.shape, gt_boxes.dtype)
+        print(gt_boxes)
+        print('labels', labels.shape, labels.dtype)
+        print(labels)
+        print('loc_normalize_mean', loc_normalize_mean)
+        print('loc_normalize_std', loc_normalize_std)
+
+
         # Include ground-truth boxes in the set of candidate rois
-        zeros = np.zeros((gt_boxes.shape[0], 1), dtype=gt_boxes.dtype)
-        all_rois = np.vstack(
-            (all_rois, np.hstack((zeros, gt_boxes[:, :-1])))
-        )
+        all_rois = np.concatenate((all_rois, gt_boxes), axis=0)
 
-        num_images = 1
-        rois_per_image = self.BATCH_SIZE / num_images
-        fg_rois_per_image = np.round(self.FG_FRACTION * rois_per_image)
+        n_pos_rois_per_image = np.round(self.POS_RATIO * self.N_SAMPLE)
 
+        # calculate iou between roi/gt_boxes
+        iou_values = calculate_iou(all_rois, gt_boxes)
 
-        # calculate iou between roi/gt_bboxes
-        iou_values = calculate_iou(all_rois[:,1:], gt_boxes[:,:4])
-        #print("-------- calculate iou -------")
-        #print(all_rois)
-        #print(gt_boxes)
-        #print(iou_values)
-
-        # find its gt_bbox, for each roi
+        # find its gt_bbox index, for each roi
         gt_assignment = iou_values.argmax(axis=1)
-        # get the biggest gt_bbox IoU, for each roi
+        # get the biggest gt_bbox IoU value, for each roi
         max_overlaps = iou_values.max(axis=1)
         
-        # the label, for the gt_bboxes
+        # the label, for the gt_boxes
         # Note: 0 means background, 1-20 for 20 classes
-        labels = gt_boxes[gt_assignment, 4] + 1
+        gt_roi_labels = labels[gt_assignment] + 1
 
 
         # Select foreground RoIs as those with >= FG_THRESH overlap
         #    if a roi has a RoI >= 0.5, it is fore ground.
-        fg_inds = np.where(max_overlaps >= self.FG_THRESH)[0]
-        fg_rois_of_this_image = min(fg_rois_per_image, fg_inds.size)
+        fg_inds = np.where(max_overlaps >= self.POS_IOU_THRESH)[0]
+        fg_rois_of_this_image = int(min(n_pos_rois_per_image, fg_inds.size))
         if fg_inds.size > 0:
             fg_inds = np.random.choice(fg_inds, size=fg_rois_of_this_image, replace=False)
 
         # Select background RoIs as those within [BG_THRESH_LO, BG_THRESH_HI)
-        bg_inds = np.where((max_overlaps >= self.BG_THRESH_LO) & 
-                            (max_overlaps < self.BG_THRESH_HI))[0]
-        bg_rois_of_this_image = rois_per_image - fg_rois_of_this_image
-        bg_rois_of_this_image = min(bg_rois_of_this_image, bg_inds.size)
+        bg_inds = np.where((max_overlaps >= self.NEG_IOU_THRESH_LO) & 
+                            (max_overlaps < self.NEG_IOU_THRESH_HI))[0]
+        bg_rois_of_this_image = self.N_SAMPLE - fg_rois_of_this_image
+        bg_rois_of_this_image = int(min(bg_rois_of_this_image, bg_inds.size))
         if bg_inds.size > 0:
             bg_inds = np.random.choice(bg_inds, size=bg_rois_of_this_image, replace=False)
 
@@ -220,27 +159,16 @@ class ProposalTargetLayer(object):
         keep_inds = np.append(fg_inds, bg_inds)
 
         # Select sampled values from various arrays:
-        labels = labels[keep_inds]
+        gt_roi_labels = gt_roi_labels[keep_inds]
 
         # Clamp labels for the background RoIs to 0
-        labels[fg_rois_of_this_image:] = 0
-        rois = all_rois[keep_inds]
-        #print("all_rois in ProposalTarget: ", all_rois)
-        #print("rois in ProposalTarget: ", rois)
+        gt_roi_labels[fg_rois_of_this_image:] = 0
+        sample_rois = all_rois[keep_inds]
 
         # transform bbox
-        bbox_target_data = bbox_transform(rois[:, 1:5], gt_boxes[gt_assignment[keep_inds], :4])
-        bbox_target_data = np.hstack((bbox_target_data, labels[:, np.newaxis])
-                                      ).astype(np.float32, copy=False)
-        #print("bbox_target_data in ProposalTarget: ", bbox_target_data)
+        gt_roi_locs = bbox_transform(sample_rois, gt_boxes[gt_assignment[keep_inds]])
+        # normalize gt_roi_locs
+        gt_roi_locs = (gt_roi_locs - np.array(loc_normalize_mean, np.float32)) / \
+                        np.array(loc_normalize_std, np.float32)
 
-        bbox_targets, bbox_inside_weights = \
-            get_bbox_regression_labels(bbox_target_data, self.num_classes)
-        #print("bbox_targets in ProposalTarget:", bbox_targets)
-
-        bbox_outside_weights = np.array(bbox_inside_weights > 0).astype(np.float32)
-        #print("bbox_inside_weights", bbox_inside_weights)
-
-        return torch.Tensor(rois).to(device), torch.LongTensor(labels).to(device), \
-                torch.Tensor(bbox_targets).to(device), torch.Tensor(bbox_inside_weights).to(device), \
-                torch.Tensor(bbox_outside_weights).to(device)
+        return sample_rois, gt_roi_locs, gt_roi_labels
