@@ -104,26 +104,27 @@ class FasterRCNN_VGG16(nn.Module):
 
     # im_info: [h, w, scale]
     def inference(self, x, im_info):
+
         features = self.Extractor(x)
 
-        rpn_locs, rpn_scores, rpn_softmax_scores = self.RPN(features)
-        print('rpn_locs', rpn_locs.shape)
-        print('rpn_scores', rpn_scores.shape)
-        print('rpn_softmax_scores', rpn_softmax_scores.shape)
+        rpn_locs, rpn_scores, rois, roi_indices, anchor = self.RPN(features, im_info)
 
-        roi = self.Proposal('Test', rpn_locs, rpn_softmax_scores, im_info)
-        print('roi', roi.shape)
+        roi_indices = roi_indices.reshape(-1,1)
 
-        roi = torch.Tensor(roi).to(device)
+        debug('rois', rois)
+        debug('roi_indices', roi_indices)
+        debug('features', features)
 
-        rois_p = self.RoIPooling(features, roi)
-        print('rois_p', rois_p)
+        indices_and_rois = np.concatenate((roi_indices, rois), axis=1)
+        indices_and_rois = change_to_tensor(indices_and_rois)
 
-        roi_locs, roi_scores = self.Detector(rois_p)
-        print('roi_locs', roi_locs)
-        print('roi_scores', roi_scores)
+        debug('indices_and_rois', indices_and_rois)
 
-        return roi_locs, roi_scores, roi
+        rois_p = self.RoIPooling(features, indices_and_rois)
+
+        roi_cls_locs, roi_scores = self.Detector(rois_p)
+
+        return roi_cls_locs, roi_scores, rois, roi_indices
 
 
     def train_step(self, x, gt_bboxes, labels, im_info):
@@ -185,23 +186,26 @@ class FasterRCNN_VGG16(nn.Module):
         print(sample_roi_indices.shape, sample_roi.shape)
 
         indices_and_rois = np.concatenate((sample_roi_indices, sample_roi), axis=1)
-        print('indices_and_rois', indices_and_rois.shape, indices_and_rois.dtype)
-        print(indices_and_rois)
+        #print('indices_and_rois', indices_and_rois.shape, indices_and_rois.dtype)
+        #print(indices_and_rois)
 
         indices_and_rois = change_to_tensor(indices_and_rois)
 
         rois_p = self.RoIPooling(features, indices_and_rois)
-        print('rois_p', rois_p.shape)
-        # print(rois_p)
+        #print('rois_p', rois_p.shape)
+        #print(rois_p)
 
         roi_cls_locs, roi_scores = self.Detector(rois_p)
 
-        print("old, gt_roi_label", gt_roi_label.shape, gt_roi_label.dtype)
+        #print("old, gt_roi_label", gt_roi_label.shape, gt_roi_label.dtype)
+        
         '''
         roi_cls_locs = change_to_tensor(np.fromfile('/home/chen/docs/temp0', dtype=np.float32)).reshape((-1,84))
         roi_scores = change_to_tensor(np.fromfile('/home/chen/docs/temp1', dtype=np.float32)).reshape((-1,21))
         gt_roi_label = change_to_tensor(np.fromfile('/home/chen/docs/temp2', dtype=np.int32)).reshape(-1,).long()
         gt_roi_loc = change_to_tensor(np.fromfile('/home/chen/docs/temp3', dtype=np.float32)).reshape(-1,4)
+        '''
+
         '''
         print('roi_cls_locs', roi_cls_locs.shape, roi_cls_locs.dtype)
         print(roi_cls_locs)
@@ -211,30 +215,32 @@ class FasterRCNN_VGG16(nn.Module):
         print(gt_roi_label)
         print('gt_roi_loc', gt_roi_loc.shape, gt_roi_loc.dtype)
         print(gt_roi_loc)
+        '''
+
 
         # detector loss
         gt_roi_label = change_to_tensor(gt_roi_label).long()
         roi_cls_loss = self.CELoss_2(roi_scores, gt_roi_label)
         
         n_sample = roi_cls_locs.shape[0]
-        roi_locs = change_to_tensor(roi_cls_locs.view(n_sample, -1, 4)[np.arange(0, n_sample), gt_roi_label])
+        roi_locs = roi_cls_locs.view(n_sample, -1, 4)[np.arange(0, n_sample), gt_roi_label]
         gt_roi_loc = change_to_tensor(gt_roi_loc)
         gt_roi_label = change_to_tensor(gt_roi_label).long()
         print("roi_locs", roi_locs.shape, roi_locs.dtype)
         
 
-        print("===========================")
-        debug('roi_locs', roi_locs)
-        debug('gt_roi_loc', gt_roi_loc)
-        debug('gt_roi_label', gt_roi_label)
+        #print("===========================")
+        #debug('roi_locs', roi_locs)
+        #debug('gt_roi_loc', gt_roi_loc)
+        #debug('gt_roi_label', gt_roi_label)
         roi_loc_loss = x_fast_rcnn_loc_loss(roi_locs.contiguous(), 
                                              gt_roi_loc, 
                                              gt_roi_label, 
                                              self.roi_sigma)
 
         total_loss = rpn_loc_loss + rpn_cls_loss + roi_loc_loss + roi_cls_loss
-        #print("==rpn_loc_loss", rpn_loc_loss) 
-        #print("==rpn_cls_loss", rpn_cls_loss)
+        print("==rpn_loc_loss", rpn_loc_loss) 
+        print("==rpn_cls_loss", rpn_cls_loss)
         print("==loc_loss", roi_loc_loss) 
         print("==cls_loss", roi_cls_loss)
         print("==total_loss", total_loss)
