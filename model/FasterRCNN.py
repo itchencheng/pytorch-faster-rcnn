@@ -15,9 +15,11 @@ from RPN import *
 
 use_drop = False
 
-def decompose_vgg16(ckpt_path):
+def decompose_vgg16(ckpt_path=None):
     vgg16_net = vgg16()
-    vgg16_net.load_state_dict(torch.load(ckpt_path))
+    
+    if (ckpt_path != None):
+        vgg16_net.load_state_dict(torch.load(ckpt_path))
 
     features = list(vgg16_net.features)[:30]
 
@@ -69,7 +71,7 @@ class ODetector(nn.Module):
 class FasterRCNN_VGG16(nn.Module):
 
     def __init__(self,
-                 vgg16_ckpt,
+                 vgg16_ckpt=None,
                  n_class=20, 
                  anchor_ratios=[0.5, 1, 2],
                  anchor_scales=[8, 16, 32]):
@@ -99,7 +101,7 @@ class FasterRCNN_VGG16(nn.Module):
         # param
         self.rpn_sigma = 3.0
         self.roi_sigma = 1.0
-        self.loc_normalize_mean = (0.,  0.,  0.,  0.)
+        self.loc_normalize_mean = (0.,  0.,  0.,  0. )
         self.loc_normalize_std  = (0.1, 0.1, 0.2, 0.2)
 
     # im_info: [h, w, scale]
@@ -107,7 +109,7 @@ class FasterRCNN_VGG16(nn.Module):
 
         features = self.Extractor(x)
 
-        rpn_locs, rpn_scores, rois, roi_indices, anchor = self.RPN(features, im_info)
+        rpn_locs, rpn_scores, rois, roi_indices, anchor = self.RPN(features, im_info, "TEST")
 
         roi_indices = roi_indices.reshape(-1,1)
 
@@ -128,23 +130,15 @@ class FasterRCNN_VGG16(nn.Module):
 
 
     def train_step(self, x, gt_bboxes, labels, im_info):
+
         features = self.Extractor(x)
         
-        rpn_locs, rpn_scores, rois, roi_indices, anchor = self.RPN(features, im_info)
-        print("rpn_locs: ", rpn_locs.shape)
-        print("rpn_scores: ", rpn_scores.shape)
-        print("rois: ", rois.shape)
-        print("roi_indices: ", roi_indices.shape)
-        print("anchor: ", anchor.shape)
+        rpn_locs, rpn_scores, rois, roi_indices, anchor = self.RPN(features, im_info, "TRAIN")
 
         # Since batch size is one, convert variables to singular form
         rpn_scores = rpn_scores[0]
-        '''
-        rpn_locs = change_to_tensor(np.fromfile('/home/chen/docs/temp1', dtype=np.float32)).reshape(rpn_locs.shape)
-        rpn_scores = change_to_tensor(np.fromfile('/home/chen/docs/temp2', dtype=np.float32)).reshape(rpn_scores.shape)
-        '''
 
-        gt_rpn_loc, gt_rpn_label = self.AnchorTarget(change_to_numpy(gt_bboxes), anchor, im_info[:2])
+        gt_rpn_loc, gt_rpn_label = self.AnchorTarget(gt_bboxes, anchor, im_info[:2])
         gt_rpn_label = change_to_tensor(gt_rpn_label).long()
         gt_rpn_loc = change_to_tensor(gt_rpn_loc)
 
@@ -163,8 +157,8 @@ class FasterRCNN_VGG16(nn.Module):
 
 
         # ------------------ Detector losses -------------------#
-        sample_roi, gt_roi_loc, gt_roi_label = self.ProposalTarget(change_to_numpy(rois), 
-                                                                    change_to_numpy(gt_bboxes),
+        sample_roi, gt_roi_loc, gt_roi_label = self.ProposalTarget(rois, 
+                                                                    gt_bboxes,
                                                                     labels,
                                                                     self.loc_normalize_mean,
                                                                     self.loc_normalize_std)

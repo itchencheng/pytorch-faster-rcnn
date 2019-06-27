@@ -17,8 +17,6 @@ class AnchorTargetLayer(object):
         self.RPN_BATCHSIZE = 256
         self.RPN_POSITIVE_RATIO = 0.5
 
-        print("init")
-
     def __call__(self, gt_bboxes, anchors, img_size):
         
         img_H, img_W = img_size

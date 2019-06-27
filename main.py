@@ -77,7 +77,7 @@ def preprocess(img, g_bbox):
     # bbox
     g_bbox = g_bbox*scale
 
-    img_info = (img.shape[-2], img.shape[-1], scale)
+    img_info = np.array((img.shape[-2], img.shape[-1], scale))
 
     return img, g_bbox, img_info
 
@@ -146,58 +146,21 @@ def do_training():
     print("# complete!!!!!")        
 
 
-def xmy_non_maximum_suppression(bboxes, nms_thresh, probs):
-
-    max_min_order = np.argsort(probs)[::-1]
-    ordered_bboxes = bboxes[max_min_order]
-    ordered_probs = probs[max_min_order]
-
-    max_bbox = ordered_bboxes[0]
-
-    keep = np.array([], np.int64)
-
-    valid_flag = np.ones(len(max_min_order), dtype=np.int32)
-
-    i = 0
-    for i in range(len(ordered_bboxes)):
-        if (valid_flag[i] == 0): 
-            continue
-
-        max_bbox = ordered_bboxes[i]
-        ordered_bbox = ordered_bboxes
-
-        two_area = (ordered_bbox[:,2]-ordered_bbox[:,0]) * (ordered_bbox[:,3]-ordered_bbox[:,1]) + \
-                    (max_bbox[2]-max_bbox[0]) * (max_bbox[3]-max_bbox[1])
-
-        top = np.maximum(ordered_bbox[:,0], max_bbox[0]*np.ones(ordered_bbox[:,0].shape))
-        bottom = np.minimum(ordered_bbox[:,2], max_bbox[2]*np.ones(ordered_bbox[:,0].shape))
-        left = np.maximum(ordered_bbox[:,1], max_bbox[1]*np.ones(ordered_bbox[:,0].shape))
-        right = np.minimum(ordered_bbox[:,3], max_bbox[3]*np.ones(ordered_bbox[:,0].shape))
-        height = np.maximum(bottom-top, np.zeros(ordered_bbox[:,0].shape))
-        width = np.maximum(right-left, np.zeros(ordered_bbox[:,0].shape))
-        
-        area_i = height * width
-        iou_value = area_i / (two_area - area_i)
-
-        thresh_idx = iou_value > nms_thresh
-
-        valid_flag[thresh_idx] = 0
-
-        keep = np.append(keep, max_min_order[i])
-
-    return keep
-
 
 def suppress(n_class, raw_cls_bbox, raw_prob):
     bbox = list()
     label = list()
     score = list()
+
+    raw_cls_bbox = raw_cls_bbox.reshape((-1, n_class, 4))
+
+    print('raw_cls_bbox', raw_cls_bbox.shape)
+    print('raw_prob', raw_prob.shape)
+
     # skip cls_id = 0 because it is the background class
     for l in range(1, n_class):
-        cls_bbox_l = raw_cls_bbox.reshape((-1, n_class, 4))[:, l, :]
+        cls_bbox_l = raw_cls_bbox[:, l, :]
         prob_l = raw_prob[:, l]
-
-        print(cls_bbox_l.shape)
 
         mask = prob_l > score_thresh
         cls_bbox_l = cls_bbox_l[mask]
@@ -206,20 +169,69 @@ def suppress(n_class, raw_cls_bbox, raw_prob):
         if (len(cls_bbox_l) == 0):
             continue
 
-        print('cls_bbox_l: ', cls_bbox_l.shape)
-        print('prob_l: ', prob_l.shape)
+        sorted_idx = np.argsort(prob_l)[::-1]
+        sorted_bbox = cls_bbox_l[sorted_idx]
+        sorted_prob = prob_l[sorted_idx]
 
-        keep = xmy_non_maximum_suppression(cls_bbox_l, nms_thresh, prob_l)
+        keep = my_non_maximum_suppression(sorted_bbox, nms_thresh)
 
         # The labels are in [0, n_class - 2].
-        bbox.append(cls_bbox_l[keep])
+        bbox.append(sorted_bbox[keep])
         label.append((l - 1) * np.ones((len(keep),)))
-        score.append(prob_l[keep])
+        score.append(sorted_prob[keep])
 
     bbox = np.concatenate(bbox, axis=0).astype(np.float32)
     label = np.concatenate(label, axis=0).astype(np.int32)
     score = np.concatenate(score, axis=0).astype(np.float32)
+
+    debug('bbox', bbox)
+    debug('label', label)
+    debug('score', score)
+
     return bbox, label, score
+
+
+def xsuppress(n_class, raw_cls_bbox, raw_prob):
+    bbox = list()
+    label = list()
+    score = list()
+
+    # dont care idx=0
+    raw_prob[:,0] = 0
+
+    raw_cls_bbox = raw_cls_bbox.reshape((-1, n_class, 4))
+    raw_prob_idx = np.argmax(raw_prob, axis=1)
+
+    # select max
+    raw_cls_bbox = raw_cls_bbox[np.arange(len(raw_prob_idx)), raw_prob_idx]
+    raw_prob = raw_prob[np.arange(len(raw_prob_idx)), raw_prob_idx]
+
+    # threshold
+    keep = raw_prob > score_thresh
+    cls_bbox = raw_cls_bbox[keep]
+    cls_prob = raw_prob[keep]
+    cls_pred = raw_prob_idx[keep]
+
+    if (len(keep) == 0):
+        return
+
+    # nms
+    sorted_idx = np.argsort(cls_prob)[::-1]
+    sorted_bbox = cls_bbox[sorted_idx]
+    sorted_prob = cls_prob[sorted_idx]
+    sorted_pred = cls_pred[sorted_idx]
+
+    keep = my_non_maximum_suppression(sorted_bbox, nms_thresh)
+
+    if (len(keep) == 0):
+        return
+
+    bbox = sorted_bbox[keep]
+    label = sorted_pred[keep]-1
+    score = sorted_prob[keep]
+
+    return bbox, label, score
+
 
 
 
@@ -298,7 +310,7 @@ def do_inference():
 
     # to gpu
     data_in = data_in.to(device)
-    faster_rcnn = FasterRCNN_VGG16('./model/vgg16/vgg16-397923af.pth').to(device)
+    faster_rcnn = FasterRCNN_VGG16().to(device)
     ckpt = torch.load("model_faster.pth")
     faster_rcnn.load_state_dict(ckpt['state'])
 
@@ -320,8 +332,8 @@ def do_inference():
     
 
 def main():
-    #do_training()
-    do_inference()
+    do_training()
+    #do_inference()
 
 
 

@@ -33,7 +33,7 @@ class RegionProposalNetwork(nn.Module):
 
         self.proposal_layer = ProposalLayer()
 
-    def forward(self, x, img_info):
+    def forward(self, x, img_info, PHASE):
         n, _, hh, ww = x.shape
 
         anchors = enumerate_shifted_anchor(self.anchor_base, self.feature_stride, hh, ww)
@@ -59,28 +59,12 @@ class RegionProposalNetwork(nn.Module):
         rois = list()
         roi_indices = list()
         for i in range(n):
-            '''            
-            rpn_locs_numpy = rpn_locs[i].cpu().data.numpy()
-            rpn_fg_scores_numpy = rpn_fg_scores[i].cpu().data.numpy()
 
-            rpn_locs_numpy = np.fromfile('/home/chen/docs/temp1', dtype=np.float32).reshape((16650, 4))
-            rpn_fg_scores_numpy = np.fromfile('/home/chen/docs/temp2', dtype=np.float32).reshape((16650,))
-
-            roi = self.proposal_layer('TRAIN',
-                                      rpn_locs_numpy,
-                                      rpn_fg_scores_numpy,
-                                      anchors,
-                                      img_info)
-            
-            
-            '''
-            roi = self.proposal_layer('TRAIN',
+            roi = self.proposal_layer(PHASE,
                                       rpn_locs[i].cpu().data.numpy(),
                                       rpn_fg_scores[i].cpu().data.numpy(),
                                       anchors,
                                       img_info)
-
-
 
             rois.append(roi)
 
