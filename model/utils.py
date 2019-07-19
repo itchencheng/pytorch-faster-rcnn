@@ -1,6 +1,13 @@
 
+from torchvision import transforms as transforms
+from skimage import transform as sktsf
 import numpy as np
 import torch
+import torch.nn.functional as F
+
+
+# set device
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
 def debug(name, x):
@@ -16,6 +23,181 @@ def normal_init(m, mean, stddev, truncated=False):
         m.weight.data.normal_(mean, stddev)
         m.bias.data.zero_()
         
+
+# ======================= pre-post process ===========================
+def pytorch_normalze(img):
+    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                     std=[0.229, 0.224, 0.225])
+    img = normalize(torch.from_numpy(img).float())
+    return img.numpy()
+
+
+def preprocess(img, g_bbox):
+    min_size = 600
+    max_size = 1000
+
+    # image
+    C, H, W = img.shape
+
+    scale_min = float(min_size) / np.min((H, W)) # Note: whether should change to float
+    scale_max = float(max_size) / np.max((H, W))
+    '''
+    scale_min = min_size / min(H, W)
+    scale_max = max_size / max(H, W)
+    '''
+    scale = min(scale_min, scale_max)
+
+    img = img / 255.
+    img = sktsf.resize(img, (C, H*scale, W*scale), mode='reflect', anti_aliasing=False)
+    img = pytorch_normalze(img)
+
+    # bbox
+    g_bbox = g_bbox*scale
+
+    img_info = np.array((img.shape[-2], img.shape[-1], scale))
+
+    # to torch.Tensor
+    img = torch.from_numpy(img)
+
+    return img, g_bbox, img_info
+
+
+
+
+
+def suppress(n_class, raw_cls_bbox, raw_prob, nms_thresh, score_thresh):
+    bbox = list()
+    label = list()
+    score = list()
+
+    raw_cls_bbox = raw_cls_bbox.reshape((-1, n_class, 4))
+
+    print('raw_cls_bbox', raw_cls_bbox.shape)
+    print('raw_prob', raw_prob.shape)
+
+    # skip cls_id = 0 because it is the background class
+    for l in range(1, n_class):
+        cls_bbox_l = raw_cls_bbox[:, l, :]
+        prob_l = raw_prob[:, l]
+
+        mask = prob_l > score_thresh
+        cls_bbox_l = cls_bbox_l[mask]
+        prob_l = prob_l[mask]
+
+        if (len(cls_bbox_l) == 0):
+            continue
+
+        sorted_idx = np.argsort(prob_l)[::-1]
+        sorted_bbox = cls_bbox_l[sorted_idx]
+        sorted_prob = prob_l[sorted_idx]
+
+        keep = my_non_maximum_suppression(sorted_bbox, nms_thresh)
+
+        # The labels are in [0, n_class - 2].
+        bbox.append(sorted_bbox[keep])
+        label.append((l - 1) * np.ones((len(keep),)))
+        score.append(sorted_prob[keep])
+
+    if (len(bbox) == 0):
+        print('no prediction get!')
+        return np.array([[0,0,0,0]], dtype=np.float32), \
+                np.array([0], dtype=np.int32), \
+                np.array([0], dtype=np.float32) 
+
+    bbox = np.concatenate(bbox, axis=0).astype(np.float32)
+    label = np.concatenate(label, axis=0).astype(np.int32)
+    score = np.concatenate(score, axis=0).astype(np.float32)
+
+    print('bbox', bbox)
+    print('label', label)
+    print('score', score)
+
+    return bbox, label, score
+
+
+def xsuppress(n_class, raw_cls_bbox, raw_prob, nms_thresh, score_thresh):
+    bbox = list()
+    label = list()
+    score = list()
+
+    # dont care idx=0
+    raw_prob[:,0] = 0
+
+    raw_cls_bbox = raw_cls_bbox.reshape((-1, n_class, 4))
+    raw_prob_idx = np.argmax(raw_prob, axis=1)
+
+    # select max
+    raw_cls_bbox = raw_cls_bbox[np.arange(len(raw_prob_idx)), raw_prob_idx]
+    raw_prob = raw_prob[np.arange(len(raw_prob_idx)), raw_prob_idx]
+
+    # threshold
+    keep = raw_prob > score_thresh
+    cls_bbox = raw_cls_bbox[keep]
+    cls_prob = raw_prob[keep]
+    cls_pred = raw_prob_idx[keep]
+
+    if (len(keep) == 0):
+        return
+
+    # nms
+    sorted_idx = np.argsort(cls_prob)[::-1]
+    sorted_bbox = cls_bbox[sorted_idx]
+    sorted_prob = cls_prob[sorted_idx]
+    sorted_pred = cls_pred[sorted_idx]
+
+    keep = my_non_maximum_suppression(sorted_bbox, nms_thresh)
+
+    if (len(keep) == 0):
+        print('no prediction get!')
+        return np.array([[0,0,0,0]], dtype=np.float32), \
+                np.array([0], dtype=np.int32), \
+                np.array([0], dtype=np.float32) 
+
+    bbox = sorted_bbox[keep]
+    label = sorted_pred[keep]-1
+    score = sorted_prob[keep]
+
+    return bbox, label, score
+
+
+def postprocess(data_in, roi_cls_locs, roi_scores, rois, roi_indices):
+    n_class = 21
+    loc_normalize_mean = (0., 0., 0., 0.)
+    loc_normalize_std = (0.1, 0.1, 0.2, 0.2)
+
+    nms_thresh = 0.3
+    score_thresh = 0.7
+
+    size = data_in.shape[-2:]
+    print(size)
+    mean = torch.Tensor(loc_normalize_mean).to(device).repeat(n_class)
+    std  = torch.Tensor(loc_normalize_std).to(device).repeat(n_class)
+
+    roi = torch.Tensor(rois)
+    print(type(rois))
+    print(type(roi))
+    roi = roi.view(-1, 1, 4)
+    roi_cls_loc = roi_cls_locs * std + mean
+    roi_cls_loc = roi_cls_loc.view(-1, n_class, 4)
+    roi = roi.view(-1, 1, 4).expand_as(roi_cls_loc)
+
+    cls_bbox = bbox_transform_inv(roi.detach().cpu().numpy().reshape((-1, 4)), roi_cls_loc.detach().cpu().numpy().reshape(-1, 4))
+    cls_bbox = torch.Tensor(cls_bbox).view(-1, n_class*4)
+
+    cls_bbox[:, 0::2] = (cls_bbox[:, 0::2]).clamp(min=0, max=size[0])
+    cls_bbox[:, 1::2] = (cls_bbox[:, 1::2]).clamp(min=0, max=size[1])
+
+    prob = F.softmax(roi_scores, dim=1)
+
+    raw_cls_bbox = cls_bbox.detach().numpy()
+    raw_prob = prob.detach().cpu().numpy()
+
+    bbox, label, score = suppress(n_class, raw_cls_bbox, raw_prob, nms_thresh, score_thresh)
+
+    return bbox, label, score
+
+
+#==================================================================
 
 # Note:
 # ratio = h / w
@@ -92,6 +274,8 @@ def bbox_transform(ex_rois, gt_rois):
 
     gt_widths = gt_rois[:, 2] - gt_rois[:, 0]
     gt_heights = gt_rois[:, 3] - gt_rois[:, 1]
+    #gt_widths = float(gt_rois[:, 2] - gt_rois[:, 0])
+    #gt_heights = float(gt_rois[:, 3] - gt_rois[:, 1])
     gt_ctr_x = gt_rois[:, 0] + 0.5 * gt_widths
     gt_ctr_y = gt_rois[:, 1] + 0.5 * gt_heights
 
@@ -141,6 +325,8 @@ def bbox_transform_inv(anchors, deltas):
 
 def clip_boxes(boxes, im_shape):
     # x1 >= 0
+    a = np.maximum(np.minimum(boxes[:, 0::4], im_shape[0]), 0)
+    print(a.shape)
     boxes[:, 0::4] = np.maximum(np.minimum(boxes[:, 0::4], im_shape[0]), 0)
     # y1 >= 0
     boxes[:, 1::4] = np.maximum(np.minimum(boxes[:, 1::4], im_shape[1]), 0)
@@ -231,7 +417,7 @@ def calculate_iou(bboxes, refer_bboxes):
 
     return iou_values
 
-
+'''
 def change_to_numpy(data):
     if isinstance(data, np.ndarray):
         return data
@@ -246,7 +432,7 @@ def change_to_tensor(data, cuda=True):
     if cuda:
         tensor = tensor.cuda()
     return tensor
-
+'''
 
 
 def unmap(data, count, inds, fill=0):

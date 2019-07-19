@@ -3,3 +3,6 @@ model/*.pyc
 model/vgg16
 *.pth
 *.txt
+*.pyc
+checkpoints/
+image/

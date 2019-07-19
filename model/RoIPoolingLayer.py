@@ -11,6 +11,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
 class RoIPoolingLayer(nn.Module):
+
     def __init__(self, pooled_h=7, pooled_w=7, spatial_scale=0.0625, pool_type='MAX'):
 
         super(RoIPoolingLayer, self).__init__()

@@ -23,6 +23,7 @@ class RegionProposalNetwork(nn.Module):
 
         self.feature_stride = feature_stride
 
+        self.proposal_layer = ProposalLayer()
         self.conv1 = nn.Conv2d(in_channels, mid_channels, 3, 1, 1)
         self.score = nn.Conv2d(mid_channels,  n_anchor*2, 1, 1, 0)
         self.locate = nn.Conv2d(mid_channels, n_anchor*4, 1, 1, 0)
@@ -31,13 +32,12 @@ class RegionProposalNetwork(nn.Module):
         normal_init(self.score,  0, 0.01)
         normal_init(self.locate, 0, 0.01)
 
-        self.proposal_layer = ProposalLayer()
 
-    def forward(self, x, img_info, PHASE):
+    def forward(self, x, img_info_np, PHASE):
         n, _, hh, ww = x.shape
 
-        anchors = enumerate_shifted_anchor(self.anchor_base, self.feature_stride, hh, ww)
-        n_anchor = anchors.shape[0] // (hh * ww)
+        anchors_np = enumerate_shifted_anchor(self.anchor_base, self.feature_stride, hh, ww)
+        n_anchor = anchors_np.shape[0] // (hh * ww)
 
         ''' conv '''
         x = F.relu(self.conv1(x))
@@ -63,15 +63,15 @@ class RegionProposalNetwork(nn.Module):
             roi = self.proposal_layer(PHASE,
                                       rpn_locs[i].cpu().data.numpy(),
                                       rpn_fg_scores[i].cpu().data.numpy(),
-                                      anchors,
-                                      img_info)
+                                      anchors_np,
+                                      img_info_np)
 
             rois.append(roi)
 
-            batch_index = i * np.ones((len(roi),), dtype=np.int32)
+            batch_index = i * np.ones((len(roi),1), dtype=np.int32)
             roi_indices.append(batch_index)
 
-        rois = np.concatenate(rois, axis=0)
-        roi_indices = np.concatenate(roi_indices, axis=0)
+        rois_np = np.concatenate(rois, axis=0)
+        roi_indices_np = np.concatenate(roi_indices, axis=0)
         
-        return rpn_locs, rpn_scores, rois, roi_indices, anchors
+        return rpn_locs, rpn_scores, rois_np, roi_indices_np, anchors_np

@@ -55,6 +55,7 @@ class Voc2007Dataset(Dataset):
 
     def __getitem__(self, idx):
         id_ = self.ids[idx]
+
         print('img_id', id_)
 
         anno = ET.parse(os.path.join(self.dir_path, 'Annotations', id_ + '.xml'))
@@ -78,20 +79,23 @@ class Voc2007Dataset(Dataset):
         
         bbox = np.stack(bbox).astype(np.float32)
         label = np.stack(label).astype(np.int32)
+
+        assert(len(bbox) == len(label))
         
         # When `use_difficult==False`, all elements in `difficult` are False.
         difficult = np.array(difficult, dtype=np.bool).astype(np.uint8)  # PyTorch don't support np.bool
 
         # Load a image
         img_file = os.path.join(self.dir_path, 'JPEGImages', id_ + '.jpg')
-        img = Image.open(img_file)
+
+        with open(img_file, 'rb') as f:
+            img = Image.open(f)
+            img = img.convert('RGB')
+            img = np.array(img).astype(np.float32)
+            img = np.transpose(img, (2,0,1))
+
         if (self.transform != None):
-            img = self.transform(img)
-
-        # if self.return_difficult:
-        #     return img, bbox, label, difficult
-
-        assert(len(bbox) == len(label))
-
-
-        return img, bbox, label, difficult
+            img, bbox, img_info = self.transform(img, bbox)
+            return img, bbox, label, difficult, img_info
+        else:
+            return img, bbox, label, difficult
