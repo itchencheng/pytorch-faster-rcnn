@@ -14,6 +14,10 @@ from AnchorTargetLayer import *
 from ProposalTargetLayer import *
 
 
+from roi_module import *
+from region_proposal_network import *
+
+
 use_drop = False
 
 def decompose_vgg16(ckpt_path=None):
@@ -85,8 +89,6 @@ class FasterRCNN_VGG16(nn.Module):
                                     anchor_ratios=anchor_ratios,
                                     anchor_scales=anchor_scales)
 
-        self.Proposal = ProposalLayer()
-
         self.RoIPooling = RoIPoolingLayer()
 
         self.Detector = ODetector(self.Classifier, n_class+1)
@@ -102,8 +104,9 @@ class FasterRCNN_VGG16(nn.Module):
         # param
         self.rpn_sigma = 3.0
         self.roi_sigma = 1.0
-        self.loc_normalize_mean_np = np.array((0.,  0.,  0.,  0.), np.float32)
-        self.loc_normalize_std_np  = np.array((0.1, 0.1, 0.2, 0.2), np.float32)
+        self.loc_normalize_mean_np = np.array((0.,  0.,  0.,  0.)).astype(np.float32)
+        self.loc_normalize_std_np  = np.array((0.1, 0.1, 0.2, 0.2)).astype(np.float32)
+
 
     # im_info: [h, w, scale]
     def inference(self, x, im_info):
@@ -112,8 +115,12 @@ class FasterRCNN_VGG16(nn.Module):
 
         rpn_locs, rpn_scores, rois_np, roi_indices_np, anchor_np = self.RPN(features, im_info, "TEST")
 
+        #for x
+        roi_indices_np = roi_indices_np.reshape(-1,1)
+        print(roi_indices_np.shape, rois_np.shape)
+
         indices_and_rois_np = np.concatenate((roi_indices_np, rois_np), axis=1)
-        indices_and_rois = torch.from_numpy(indices_and_rois_np)
+        indices_and_rois = torch.from_numpy(indices_and_rois_np.astype(np.float32)).to(device)
 
         rois_p = self.RoIPooling(features, indices_and_rois)
 
@@ -123,12 +130,22 @@ class FasterRCNN_VGG16(nn.Module):
 
 
     def train_step(self, x, gt_bboxes_np, labels_np, im_info_np):
+        loss = self.train_step_inner(x, gt_bboxes_np, labels_np, im_info_np)
+        return loss
+
+
+    def train_step_inner(self, x, gt_bboxes_np, labels_np, im_info_np):
 
         features = self.Extractor(x)
-        
+
         rpn_locs, rpn_scores, rois_np, roi_indices_np, anchor_np = self.RPN(features, im_info_np, "TRAIN")
 
         gt_rpn_loc_np, gt_rpn_label_np = self.AnchorTarget(gt_bboxes_np, anchor_np, im_info_np[:2])
+        
+        #print('&&&rpn_locs', rpn_locs)
+        #print('gt_rpn_loc', gt_rpn_loc_np)
+        #print('gt_rpn_label', gt_rpn_label_np)
+
         gt_rpn_loc = torch.from_numpy(gt_rpn_loc_np).to(device)
         gt_rpn_label = torch.from_numpy(gt_rpn_label_np).long().to(device)
 
@@ -137,10 +154,15 @@ class FasterRCNN_VGG16(nn.Module):
                                             gt_rpn_loc,
                                             gt_rpn_label.data,
                                             self.rpn_sigma)
+        #print('-------rpn_loc_loss', rpn_loc_loss)
 
         rpn_cls_loss = self.CELoss_1(rpn_scores[0], gt_rpn_label)
 
 
+
+        #print('-rois_np', rois_np, rois_np.dtype)
+        #print('-gt_bboxes_np', gt_bboxes_np, gt_bboxes_np.dtype)
+        #print('-labels_np', labels_np, labels_np.dtype)
         # ------------------ Detector losses -------------------#
         sample_roi_np, gt_roi_loc_np, gt_roi_label_np = self.ProposalTarget(rois_np, 
                                                                             gt_bboxes_np,
@@ -149,12 +171,19 @@ class FasterRCNN_VGG16(nn.Module):
                                                                             self.loc_normalize_std_np)
 
         sample_roi_indices_np = np.zeros((len(sample_roi_np), 1))
+        # ----------- head -----------------
+        #print('features', features[features>0.3])
+        #print('sample_roi', sample_roi_np)
         indices_and_rois_np = np.concatenate((sample_roi_indices_np, sample_roi_np), axis=1)
-        indices_and_rois = torch.from_numpy(indices_and_rois_np).to(device)
+        indices_and_rois = torch.from_numpy(indices_and_rois_np.astype(np.float32)).to(device)
 
+        #print('indices_and_rois', indices_and_rois, indices_and_rois.shape)
         rois_p = self.RoIPooling(features, indices_and_rois)
-        roi_cls_locs, roi_scores = self.Detector(rois_p)
+        #print('rois_p', rois_p[-1][-1], rois_p.shape)
 
+        roi_cls_locs, roi_scores = self.Detector(rois_p)
+        #print('roi_cls_locs', roi_cls_locs)
+        #print('roi_scores', roi_scores)
 
         # detector loss
         gt_roi_label = torch.from_numpy(gt_roi_label_np).long().to(device)
@@ -178,24 +207,3 @@ class FasterRCNN_VGG16(nn.Module):
         print("==total_loss", total_loss)
 
         return total_loss
-
-
-    '''
-    def get_optimizer(self, lr, weight_decay, use_adam):
-        """
-        return optimizer, It could be overwriten if you want to specify 
-        special optimizer
-        """
-        params = []
-        for key, value in dict(self.named_parameters()).items():
-            if value.requires_grad:
-                if 'bias' in key:
-                    params += [{'params': [value], 'lr': lr * 2, 'weight_decay': 0}]
-                else:
-                    params += [{'params': [value], 'lr': lr, 'weight_decay': weight_decay}]
-        if use_adam:
-            self.optimizer = t.optim.Adam(params)
-        else:
-            self.optimizer = t.optim.SGD(params, momentum=0.9)
-        return self.optimizer
-    '''

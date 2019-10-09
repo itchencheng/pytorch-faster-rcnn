@@ -3,6 +3,7 @@ import torch
 import numpy as np
 from utils import *
 
+#np.random.seed(23)
 
 # set device
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -32,15 +33,18 @@ class AnchorTargetLayer(object):
             (anchors[:, 2] <= img_H) &  # width
             (anchors[:, 3] <= img_W)    # height
         )[0]        
-        anchors = anchors[inds_inside, :]
+        anchors = anchors[inds_inside]
 
         ### create labels
         # label: 1 is positive, 0 is negative, -1 is dont care
-        labels = np.empty((len(inds_inside), ), dtype=np.long)
+        labels = np.empty((len(inds_inside), ), dtype=np.int32)
         labels.fill(-1)
 
         # calculate iou between anchors/gt_bboxes
-        iou_values = calculate_iou(anchors, gt_bboxes)
+        #iou_values = calculate_iou(anchors, gt_bboxes)
+        iou_values = bbox_iou(anchors, gt_bboxes)
+
+        print('iou_values', iou_values[iou_values > 0.1])
 
         # Now, begin to set labels
         # 1. find bboxes with high iou for each anchor
@@ -53,14 +57,15 @@ class AnchorTargetLayer(object):
         ################################################################################
         # gt_argmax_overlaps = np.where(iou_values == gt_max_overlaps)[0]
 
+        # Negative label
+        # (iii) non-positive anchors, if IoU ratio < 0.3 for all ground-truth boxes 
+        labels[max_overlaps < self.NEGATIVE_OVERLAP] = 0
+
         # Positive label
         # (i) the anchor with hightest IOU overlap for a groundtruth bbox
         labels[gt_argmax_overlaps] = 1
         # (ii) the anchor has a IOU > 0.7, for any groundtruth bbox
-        labels[max_overlaps > self.POSITIVE_OVERLAP] = 1
-        # Negative label
-        # (iii) non-positive anchors, if IoU ratio < 0.3 for all ground-truth boxes 
-        labels[max_overlaps < self.NEGATIVE_OVERLAP] = 0
+        labels[max_overlaps >= self.POSITIVE_OVERLAP] = 1
 
         # choose Positvie & Negative
         # subsample positive labels if we have too many
@@ -81,7 +86,7 @@ class AnchorTargetLayer(object):
 
         # Note:
         #   the target is to make each anchor close to its highest bbox
-        bbox_targets = bbox_transform(anchors, gt_bboxes[argmax_overlaps, :])
+        bbox_targets = bbox_transform(anchors, gt_bboxes[argmax_overlaps])
 
         # map up to original set of anchors
         labels = unmap(labels, n_anchors, inds_inside, fill=-1)

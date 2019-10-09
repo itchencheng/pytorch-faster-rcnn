@@ -17,11 +17,16 @@ def debug(name, x):
 
 def normal_init(m, mean, stddev, truncated=False):
     """ weight initalizer: truncated normal and random normal """
+
     if truncated:
         m.weight.data.normal_().fmod_(2).mul_(stddev).add_(mean)  # not a perfect approximation
     else:
         m.weight.data.normal_(mean, stddev)
         m.bias.data.zero_()
+    '''
+    m.weight.data.fill_(0.02)
+    m.bias.data.zero_()
+    '''    
         
 
 # ======================= pre-post process ===========================
@@ -39,7 +44,7 @@ def preprocess(img, g_bbox):
     # image
     C, H, W = img.shape
 
-    scale_min = float(min_size) / np.min((H, W)) # Note: whether should change to float
+    scale_min = float(min_size) / np.min((H, W))
     scale_max = float(max_size) / np.max((H, W))
     '''
     scale_min = min_size / min(H, W)
@@ -51,10 +56,13 @@ def preprocess(img, g_bbox):
     img = sktsf.resize(img, (C, H*scale, W*scale), mode='reflect', anti_aliasing=False)
     img = pytorch_normalze(img)
 
-    # bbox
-    g_bbox = g_bbox*scale
+    _, o_H, o_W = img.shape
 
-    img_info = np.array((img.shape[-2], img.shape[-1], scale))
+    # bbox
+    g_bbox[:,0::2] = float(o_H) / H * g_bbox[:,0::2]
+    g_bbox[:,1::2] = float(o_W) / W * g_bbox[:,1::2]
+
+    img_info = np.array((img.shape[-2], img.shape[-1], scale)).astype(np.float32)
 
     # to torch.Tensor
     img = torch.from_numpy(img)
@@ -166,7 +174,7 @@ def postprocess(data_in, roi_cls_locs, roi_scores, rois, roi_indices):
     loc_normalize_std = (0.1, 0.1, 0.2, 0.2)
 
     nms_thresh = 0.3
-    score_thresh = 0.7
+    score_thresh = 0.05
 
     size = data_in.shape[-2:]
     print(size)
@@ -237,7 +245,7 @@ def generate_anchors(base_size=16, anchor_scales=[8, 16, 32], anchor_ratios=[0.5
     anchors = np.hstack(((ctr_y - 0.5 * hs),
                          (ctr_x - 0.5 * ws),
                          (ctr_y + 0.5 * hs),
-                         (ctr_x + 0.5 * ws)))
+                         (ctr_x + 0.5 * ws))).astype(np.float32)
 
     return anchors
 
@@ -261,31 +269,31 @@ def enumerate_shifted_anchor(anchors, feat_stride, height, width):
     K = shifts.shape[0]
     anchors = anchors.reshape((1, A, 4)) + \
               shifts.reshape((1, K, 4)).transpose((1, 0, 2))
-    all_anchors = anchors.reshape((K * A, 4))
+    all_anchors = anchors.reshape((K * A, 4)).astype(np.float32)
 
     return all_anchors
 
 
 def bbox_transform(ex_rois, gt_rois):
-    ex_widths = ex_rois[:, 2] - ex_rois[:, 0]
-    ex_heights = ex_rois[:, 3] - ex_rois[:, 1]
-    ex_ctr_x = ex_rois[:, 0] + 0.5 * ex_widths
-    ex_ctr_y = ex_rois[:, 1] + 0.5 * ex_heights
+    ex_heights = ex_rois[:, 2] - ex_rois[:, 0]
+    ex_widths = ex_rois[:, 3] - ex_rois[:, 1]
+    ex_ctr_y = ex_rois[:, 0] + 0.5 * ex_heights
+    ex_ctr_x = ex_rois[:, 1] + 0.5 * ex_widths
 
-    gt_widths = gt_rois[:, 2] - gt_rois[:, 0]
-    gt_heights = gt_rois[:, 3] - gt_rois[:, 1]
-    #gt_widths = float(gt_rois[:, 2] - gt_rois[:, 0])
-    #gt_heights = float(gt_rois[:, 3] - gt_rois[:, 1])
-    gt_ctr_x = gt_rois[:, 0] + 0.5 * gt_widths
-    gt_ctr_y = gt_rois[:, 1] + 0.5 * gt_heights
+    gt_heights = gt_rois[:, 2] - gt_rois[:, 0]
+    gt_widths = gt_rois[:, 3] - gt_rois[:, 1]
 
-    targets_dx = (gt_ctr_x - ex_ctr_x) / ex_widths
+    gt_ctr_y = gt_rois[:, 0] + 0.5 * gt_heights
+    gt_ctr_x = gt_rois[:, 1] + 0.5 * gt_widths
+
     targets_dy = (gt_ctr_y - ex_ctr_y) / ex_heights
+    targets_dx = (gt_ctr_x - ex_ctr_x) / ex_widths
+    
     targets_dw = np.log(gt_widths / ex_widths)
     targets_dh = np.log(gt_heights / ex_heights)
 
     targets = np.vstack(
-        (targets_dx, targets_dy, targets_dw, targets_dh)).transpose()
+        (targets_dy, targets_dx, targets_dh, targets_dw)).transpose()
     return targets
 
 
@@ -295,15 +303,15 @@ def bbox_transform_inv(anchors, deltas):
 
     anchors = anchors.astype(deltas.dtype, copy=False)
 
-    widths = anchors[:, 2] - anchors[:, 0]
-    heights = anchors[:, 3] - anchors[:, 1]
-    ctr_x = anchors[:, 0] + 0.5 * widths
-    ctr_y = anchors[:, 1] + 0.5 * heights
+    heights = anchors[:, 2] - anchors[:, 0]
+    widths = anchors[:, 3] - anchors[:, 1]
+    ctr_y = anchors[:, 0] + 0.5 * heights
+    ctr_x = anchors[:, 1] + 0.5 * widths
 
-    dx = deltas[:, 0::4]
-    dy = deltas[:, 1::4]
-    dw = deltas[:, 2::4]
-    dh = deltas[:, 3::4]
+    dy = deltas[:, 0::4]
+    dx = deltas[:, 1::4]
+    dh = deltas[:, 2::4]
+    dw = deltas[:, 3::4]
 
     pred_ctr_x = dx * widths[:, np.newaxis] + ctr_x[:, np.newaxis]
     pred_ctr_y = dy * heights[:, np.newaxis] + ctr_y[:, np.newaxis]
@@ -311,36 +319,35 @@ def bbox_transform_inv(anchors, deltas):
     pred_h = np.exp(dh) * heights[:, np.newaxis]
 
     pred_boxes = np.zeros(deltas.shape, dtype=deltas.dtype)
-    # x1
-    pred_boxes[:, 0::4] = pred_ctr_x - 0.5 * pred_w
     # y1
-    pred_boxes[:, 1::4] = pred_ctr_y - 0.5 * pred_h
-    # x2
-    pred_boxes[:, 2::4] = pred_ctr_x + 0.5 * pred_w
+    pred_boxes[:, 0::4] = pred_ctr_y - 0.5 * pred_h
+    # x1
+    pred_boxes[:, 1::4] = pred_ctr_x - 0.5 * pred_w
     # y2
-    pred_boxes[:, 3::4] = pred_ctr_y + 0.5 * pred_h
+    pred_boxes[:, 2::4] = pred_ctr_y + 0.5 * pred_h
+    # x2
+    pred_boxes[:, 3::4] = pred_ctr_x + 0.5 * pred_w
 
     return pred_boxes
 
 
 def clip_boxes(boxes, im_shape):
-    # x1 >= 0
-    a = np.maximum(np.minimum(boxes[:, 0::4], im_shape[0]), 0)
-    print(a.shape)
-    boxes[:, 0::4] = np.maximum(np.minimum(boxes[:, 0::4], im_shape[0]), 0)
+    h, w = im_shape[:2]
     # y1 >= 0
-    boxes[:, 1::4] = np.maximum(np.minimum(boxes[:, 1::4], im_shape[1]), 0)
-    # x2 < im_shape[1]
-    boxes[:, 2::4] = np.maximum(np.minimum(boxes[:, 2::4], im_shape[0]), 0)
-    # y2 < im_shape[0]
-    boxes[:, 3::4] = np.maximum(np.minimum(boxes[:, 3::4], im_shape[1]), 0)
+    boxes[:, 0::4] = np.maximum(np.minimum(boxes[:, 0::4], h), 0)
+    # x1 >= 0
+    boxes[:, 1::4] = np.maximum(np.minimum(boxes[:, 1::4], w), 0)
+    # y2 < im_shape[1]
+    boxes[:, 2::4] = np.maximum(np.minimum(boxes[:, 2::4], h), 0)
+    # x2 < im_shape[0]
+    boxes[:, 3::4] = np.maximum(np.minimum(boxes[:, 3::4], w), 0)
     return boxes
 
 
 def filter_boxes(boxes, min_size):
     """Remove all boxes with any side smaller than min_size."""
-    ws = boxes[:, 2] - boxes[:, 0] + 1
-    hs = boxes[:, 3] - boxes[:, 1] + 1
+    ws = boxes[:, 2] - boxes[:, 0]
+    hs = boxes[:, 3] - boxes[:, 1]
     keep = np.where((ws >= min_size) & (hs >= min_size))[0]
     return keep
 
@@ -417,22 +424,20 @@ def calculate_iou(bboxes, refer_bboxes):
 
     return iou_values
 
-'''
-def change_to_numpy(data):
-    if isinstance(data, np.ndarray):
-        return data
-    if isinstance(data, torch.Tensor):
-        return data.detach().cpu().numpy()
+def bbox_iou(bbox_a, bbox_b):
 
-def change_to_tensor(data, cuda=True):
-    if isinstance(data, np.ndarray):
-        tensor = torch.from_numpy(data)
-    if isinstance(data, torch.Tensor):
-        tensor = data.detach()
-    if cuda:
-        tensor = tensor.cuda()
-    return tensor
-'''
+    if bbox_a.shape[1] != 4 or bbox_b.shape[1] != 4:
+        raise IndexError
+
+    # top left
+    tl = np.maximum(bbox_a[:, None, :2], bbox_b[:, :2])
+    # bottom right
+    br = np.minimum(bbox_a[:, None, 2:], bbox_b[:, 2:])
+
+    area_i = np.prod(br - tl, axis=2) * (tl < br).all(axis=2)
+    area_a = np.prod(bbox_a[:, 2:] - bbox_a[:, :2], axis=1)
+    area_b = np.prod(bbox_b[:, 2:] - bbox_b[:, :2], axis=1)
+    return area_i / (area_a[:, None] + area_b - area_i)
 
 
 def unmap(data, count, inds, fill=0):
@@ -449,28 +454,3 @@ def unmap(data, count, inds, fill=0):
     return ret
 
 
-
-def get_bbox_regression_labels(bbox_target_data, num_classes):
-    '''
-    Input: box regression targets (bbox_target_data) are in a format:
-        N x (class, tx, ty, tw, th)
-    The function is to change the target format, to confront with CNN output.
-        Make the bbox_target N x (K x 4).
-        K is the num_of_classes, equal to 21.
-    '''
-    class_info = bbox_target_data[:, 4]
-
-    bbox_targets = np.zeros((class_info.size, 4*num_classes), dtype=np.float32)
-    
-    bbox_inside_weights = np.zeros(bbox_targets.shape, dtype=np.float32)
-    
-    inds = np.where(class_info > 0)[0]
-
-    for ind in inds:
-        clas = int(class_info[ind])
-        start = 4 * clas
-        end = start + 4
-        bbox_targets[ind, start:end] = bbox_target_data[ind, :4]
-        bbox_inside_weights[ind, start:end] = (1., 1., 1., 1.)
-
-    return bbox_targets, bbox_inside_weights

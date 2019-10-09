@@ -17,9 +17,6 @@ import eval_tools
 # set device
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-
-
-
 VOC_BBOX_LABEL_NAMES = (
     'aeroplane',
     'bicycle',
@@ -43,14 +40,11 @@ VOC_BBOX_LABEL_NAMES = (
     'tvmonitor')
 
 
-
 def save_model(cnn_model, ckpt_name):
     # save models
     state_dict = {"state": cnn_model.state_dict()}
     torch.save(state_dict, ckpt_name)
     print("Model saved! %s" %(ckpt_name))
-
-
 
 
 def do_training():
@@ -72,23 +66,13 @@ def do_training():
                                                   num_workers=0, \
                                                   pin_memory=True)
 
-    # set learning policy
-    learning_rate = 0.001
-    optimizer = torch.optim.SGD(faster_rcnn.parameters(), lr=learning_rate, momentum=0.9, weight_decay=0.0005)
-
     # to train
     train_flag = True
     epoch = 0
     iter_count = 0
 
     while(train_flag):
-
-        ''' eval '''
-        eval_result = eval_tools.evalx(test_dataloader, faster_rcnn, test_num=1000)
-        eval_name = "checkpoints/fasterrcnn_20190719_epoch%d_%.4f" %(epoch, eval_result['map'])
-        print(eval_name)
-        save_model(faster_rcnn, eval_name)
-
+  
         for ii, (imgs_, gt_bboxes_, gt_labels_, gt_difficults_, img_info_) in enumerate(dataloader):
 
             # change data type
@@ -99,14 +83,14 @@ def do_training():
             img_info_ = img_info_[0].numpy()
 
             # update parameters
-            optimizer.zero_grad()
+            #optimizer.zero_grad()
 
             loss = faster_rcnn.train_step(imgs_, gt_bboxes_, gt_labels_, img_info_)
                     
-            loss.backward()
-            optimizer.step()
+            #loss.backward()
+            #optimizer.step()
 
-            if (0 == iter_count%100):
+            if (0 == iter_count%200):
                 save_model(faster_rcnn, "checkpoints/fasterrcnn_20190718.pth")
 
             '''
@@ -123,7 +107,17 @@ def do_training():
             iter_count += 1
 
 
+            #if (iter_count == 10):
+            #    exit(0)
+
+        ''' eval '''
+        eval_result = eval_tools.evalx(test_dataloader, faster_rcnn, test_num=1000)
+        eval_name = "checkpoints/fasterrcnn_20190724_epoch%d_%.4f" %(epoch, eval_result['map'])
+        print(eval_name)
+        save_model(faster_rcnn, eval_name)
+
         if (epoch == 9):
+            break
             learning_rate = learning_rate * 0.1
             optimizer = torch.optim.SGD(faster_rcnn.parameters(), lr=learning_rate, momentum=0.9, weight_decay=0.0005)
 
@@ -169,6 +163,9 @@ def do_inference():
 
     # get data_in
     data_in = Image.open(img_file)
+    data_in = data_in.convert('RGB')
+    data_in = np.array(data_in).astype(np.float32)
+    data_in = np.transpose(data_in, (2,0,1))
 
     gt_bboxes = np.array([[0,0,0,0]]).astype(np.float32)
     data_in = np.array(data_in).astype(np.float32)
@@ -181,8 +178,8 @@ def do_inference():
     # to gpu
     data_in = data_in.to(device)
     faster_rcnn = FasterRCNN_VGG16().to(device)
-    ckpt = torch.load("checkpoints/fasterrcnn_20190712.pth")
-    faster_rcnn.load_state_dict(ckpt['state'])
+    #ckpt = torch.load("checkpoints/fasterrcnn_20190712.pth")
+    #faster_rcnn.load_state_dict(ckpt['state'])
 
     # run
     debug('data_in', data_in)
