@@ -24,7 +24,7 @@ class AnchorTargetLayer(object):
         n_anchors = len(anchors)
 
         ### As paper said:
-        # during training, wei ignore all cross-boudary anchors,
+        # during training, we ignore all cross-boudary anchors,
         #  so, they don't contribute to the loss. Or, they will
         #  introduce larget error terms, training will not converge.
         inds_inside = np.where(
@@ -41,16 +41,13 @@ class AnchorTargetLayer(object):
         labels.fill(-1)
 
         # calculate iou between anchors/gt_bboxes
-        #iou_values = calculate_iou(anchors, gt_bboxes)
-        iou_values = bbox_iou(anchors, gt_bboxes)
-
-        print('iou_values', iou_values[iou_values > 0.1])
-
+        iou_values = calculate_iou(anchors, gt_bboxes)
+        
         # Now, begin to set labels
-        # 1. find bboxes with high iou for each anchor
+        # 1. for each anchor, find bboxes with highest iou
         argmax_overlaps = iou_values.argmax(axis=1)
         max_overlaps = iou_values[np.arange(len(inds_inside)), argmax_overlaps]
-        # 2. find anchor with high iou for each bbox
+        # 2. for each bbox, find anchor with highest iou
         gt_argmax_overlaps = iou_values.argmax(axis=0)
         gt_max_overlaps = iou_values[gt_argmax_overlaps, np.arange(iou_values.shape[1])]
 

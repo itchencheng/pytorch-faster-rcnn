@@ -8,7 +8,9 @@ import eval_tools
 import sys
 import os
 
-
+'''
+ python eval.py model.pth
+'''
 def main():
     pth_file = sys.argv[1]
     print("load:", pth_file)
