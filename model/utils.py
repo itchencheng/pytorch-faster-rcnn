@@ -424,6 +424,7 @@ def calculate_iou(bboxes, refer_bboxes):
 
     return iou_values
 
+"""
 def bbox_iou(bbox_a, bbox_b):
 
     if bbox_a.shape[1] != 4 or bbox_b.shape[1] != 4:
@@ -438,7 +439,7 @@ def bbox_iou(bbox_a, bbox_b):
     area_a = np.prod(bbox_a[:, 2:] - bbox_a[:, :2], axis=1)
     area_b = np.prod(bbox_b[:, 2:] - bbox_b[:, :2], axis=1)
     return area_i / (area_a[:, None] + area_b - area_i)
-
+"""
 
 def unmap(data, count, inds, fill=0):
     """ Unmap a subset of item (data) back to the original set of items (of

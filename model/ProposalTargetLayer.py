@@ -12,7 +12,6 @@ class ProposalTargetLayer(object):
     def __init__(self):
         # Minibatch size (number of regions of interest [ROIs])
         self.N_SAMPLE = 128
-
         # Fraction of minibatch that is labeled foreground (i.e. class > 0)
         self.POS_RATIO = 0.25
 

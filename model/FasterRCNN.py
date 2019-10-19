@@ -139,7 +139,7 @@ class FasterRCNN_VGG16(nn.Module):
         features = self.Extractor(x)
 
         rpn_locs, rpn_scores, rois_np, roi_indices_np, anchor_np = self.RPN(features, im_info_np, "TRAIN")
-
+/
         gt_rpn_loc_np, gt_rpn_label_np = self.AnchorTarget(gt_bboxes_np, anchor_np, im_info_np[:2])
         
         #print('&&&rpn_locs', rpn_locs)

@@ -44,7 +44,7 @@ class AnchorTargetLayer(object):
         #iou_values = calculate_iou(anchors, gt_bboxes)
         iou_values = bbox_iou(anchors, gt_bboxes)
 
-        print('iou_values', iou_values[iou_values > 0.1])
+        #print('iou_values', iou_values[iou_values > 0.1])
 
         # Now, begin to set labels
         # 1. find bboxes with high iou for each anchor
