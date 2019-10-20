@@ -1,3 +1,5 @@
+#coding:utf-8
+
 from __future__ import division
 
 from collections import defaultdict
@@ -16,34 +18,31 @@ import torch
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
-
+# reference: https://zhuanlan.zhihu.com/p/43068926
 def calc_detection_voc_ap(prec, rec, use_07_metric=False):
 
     n_fg_class = len(prec)
 
-    #print(prec)
-    #print(rec)
-
     ap = np.empty(n_fg_class)
-    for l in range(n_fg_class):
-        if prec[l] is None or rec[l] is None:
-            ap[l] = np.nan
+    for lbl in range(n_fg_class):
+        if (prec[lbl] is None) or (rec[lbl] is None):
+            ap[lbl] = np.nan
             continue
 
         if use_07_metric:
             # 11 point metric
-            ap[l] = 0
+            ap[lbl] = 0
             for t in np.arange(0., 1.1, 0.1):
-                if np.sum(rec[l] >= t) == 0:
+                if np.sum(rec[lbl] >= t) == 0:
                     p = 0
                 else:
-                    p = np.max(np.nan_to_num(prec[l])[rec[l] >= t])
-                ap[l] += p / 11
+                    p = np.max(np.nan_to_num(prec[lbl])[rec[lbl] >= t])
+                ap[lbl] += p / 11
         else:
             # correct AP calculation
             # first append sentinel values at the end
-            mpre = np.concatenate(([0], np.nan_to_num(prec[l]), [0]))
-            mrec = np.concatenate(([0], rec[l], [1]))
+            mpre = np.concatenate(([0], np.nan_to_num(prec[lbl]), [0]))
+            mrec = np.concatenate(([0], rec[lbl], [1]))
 
             mpre = np.maximum.accumulate(mpre[::-1])[::-1]
 
@@ -52,7 +51,7 @@ def calc_detection_voc_ap(prec, rec, use_07_metric=False):
             i = np.where(mrec[1:] != mrec[:-1])[0]
 
             # and sum (\Delta recall) * prec
-            ap[l] = np.sum((mrec[i + 1] - mrec[i]) * mpre[i + 1])
+            ap[lbl] = np.sum((mrec[i + 1] - mrec[i]) * mpre[i + 1])
 
     return ap
 
@@ -64,52 +63,54 @@ def calc_detection_voc_prec_rec(
         gt_difficults=None,
         iou_thresh=0.5):
 
-    pred_bboxes = iter(pred_bboxes)
-    pred_labels = iter(pred_labels)
-    pred_scores = iter(pred_scores)
-    gt_bboxes = iter(gt_bboxes)
-    gt_labels = iter(gt_labels)
+    n_samples = len(pred_bboxes)
+    
     if gt_difficults is None:
-        gt_difficults = itertools.repeat(None)
-    else:
-        gt_difficults = iter(gt_difficults)
+        gt_difficults = [None] * n_samples
 
     n_pos = defaultdict(int)
     score = defaultdict(list)
     match = defaultdict(list)
 
-    for pred_bbox, pred_label, pred_score, gt_bbox, gt_label, gt_difficult in \
-            six.moves.zip(
-                pred_bboxes, pred_labels, pred_scores,
-                gt_bboxes, gt_labels, gt_difficults):
+    # for each input image
+    for idx in range(n_samples):
+        pred_bbox = pred_bboxes[idx]
+        pred_label = pred_labels[idx]
+        pred_score = pred_scores[idx]
+        gt_bbox = gt_bboxes[idx]
+        gt_label = gt_labels[idx]
+        gt_difficult = gt_difficults[idx]
 
         if gt_difficult is None:
             gt_difficult = np.zeros(gt_bbox.shape[0], dtype=bool)
 
-        for l in np.unique(np.concatenate((pred_label, gt_label)).astype(int)):
-
-            # For the label "l"
-            # pred
-            pred_mask_l = pred_label == l
+        # For the label "lbl"
+        for lbl in np.unique(np.concatenate((pred_label, gt_label)).astype(int)):
+            # 筛选当前类别lbl的预测结果pred_xx
+            pred_mask_l = (pred_label == lbl)
             pred_bbox_l = pred_bbox[pred_mask_l]
             pred_score_l = pred_score[pred_mask_l]
-
+            # 并按照(置信度)排序
             order = pred_score_l.argsort()[::-1]
             pred_bbox_l = pred_bbox_l[order]
             pred_score_l = pred_score_l[order]
-            
-            # ground truth
-            gt_mask_l = (gt_label == l)
+
+            # 筛选当前类别lbl的ground truth
+            gt_mask_l = (gt_label == lbl)
             gt_bbox_l = gt_bbox[gt_mask_l]
             gt_difficult_l = gt_difficult[gt_mask_l]
+            
+            # n_pos[lbl]: 记录lbl类别的ground truth个数, gt_truth都是正例
+            n_pos[lbl] += np.logical_not(gt_difficult_l).sum()
+            # score[lbl]: 记录lbl类别的预测置信度
+            score[lbl].extend(pred_score_l)
 
-            n_pos[l] += np.logical_not(gt_difficult_l).sum() # the number of non-difficult
-            score[l].extend(pred_score_l)
-
+            # 如果没有预测为lbl类别的，则跳过
             if len(pred_bbox_l) == 0:
                 continue
+            # 如果没有lbl的ground truth，对于预测为lbl的判断，match都为0
             if len(gt_bbox_l) == 0:
-                match[l].extend((0,) * pred_bbox_l.shape[0])
+                match[lbl].extend((0,) * pred_bbox_l.shape[0])
                 continue
 
             # VOC evaluation follows integer typed bounding boxes.
@@ -117,59 +118,53 @@ def calc_detection_voc_prec_rec(
             pred_bbox_l[:, 2:] += 1
             gt_bbox_l = gt_bbox_l.copy()
             gt_bbox_l[:, 2:] += 1
-
+            # 计算IoU
             iou = calculate_iou(pred_bbox_l, gt_bbox_l)
-            
-            #print('pred_bbox_l', pred_bbox_l)
-            #print('gt_bbox_l', gt_bbox_l)
-            #print('iou', iou)
-            
+
             gt_index = iou.argmax(axis=1)
-            # set -1 if there is no matching ground truth
+            # 如果IoU小于threshold则认为无效，记为-1
             gt_index[iou.max(axis=1) < iou_thresh] = -1
             del iou
 
-            # The logic: if matched, the match is 1.
+            # 将selec初始化为全false， 用来标志gt_bbox是否已被对应
             selec = np.zeros(gt_bbox_l.shape[0], dtype=bool)
             for gt_idx in gt_index:
+                # 对于IoU大于threshold的pred bbox
                 if gt_idx >= 0:
+                    # 如果是difficult，则match为-1
                     if gt_difficult_l[gt_idx]:
-                        match[l].append(-1)
+                        match[lbl].append(-1)
                     else:
                         if not selec[gt_idx]:
-                            match[l].append(1)
+                            match[lbl].append(1)
                         else:
-                            match[l].append(0)
+                            match[lbl].append(0)
                     selec[gt_idx] = True
                 else:
-                    match[l].append(0)
-
-    for iter_ in (
-            pred_bboxes, pred_labels, pred_scores,
-            gt_bboxes, gt_labels, gt_difficults):
-        if next(iter_, None) is not None:
-            raise ValueError('Length of input iterables need to be same.')
+                    match[lbl].append(0)
 
     n_fg_class = max(n_pos.keys()) + 1
     prec = [None] * n_fg_class
     rec = [None] * n_fg_class
 
-    for l in n_pos.keys():
-        score_l = np.array(score[l])
-        match_l = np.array(match[l], dtype=np.int8)
+    for lbl in n_pos.keys():
+        score_l = np.array(score[lbl])
+        match_l = np.array(match[lbl], dtype=np.int8)
 
+        # 所有样本的预测结果的大排序
         order = score_l.argsort()[::-1]
         match_l = match_l[order]
 
-        tp = np.cumsum(match_l == 1)
-        fp = np.cumsum(match_l == 0)
+        # match为所有的预测数，排序后记录所有的tp和fp。
+        tp = np.cumsum(match_l == 1) # 预测对的总bbox数
+        fp = np.cumsum(match_l == 0) # 预测错的总bbox数
 
         # If an element of fp + tp is 0,
         # the corresponding element of prec[l] is nan.
-        prec[l] = tp / (fp + tp)
-        # If n_pos[l] is 0, rec[l] is None.
-        if n_pos[l] > 0:
-            rec[l] = tp / n_pos[l]
+        prec[lbl] = tp / (fp + tp)
+        # If n_pos[lbl] is 0, rec[lbl] is None.
+        if n_pos[lbl] > 0:
+            rec[lbl] = tp / n_pos[lbl]
 
     return prec, rec
 
@@ -195,13 +190,7 @@ def evalx(test_dataloader, faster_rcnn, test_num=10000):
 
     for ii, (imgs_, gt_bboxes_, gt_labels_, gt_difficults_, img_info_) in enumerate(test_dataloader):
 
-        print((ii, len(test_dataloader)))
-
         imgs_ = imgs_.to(device)
-
-        #debug("gt_bboxes_", gt_bboxes_)
-        #debug("gt_labels_", gt_labels_)
-        #debug("gt_difficults_", gt_difficults_)
 
         '''
         It seems that:
@@ -212,18 +201,12 @@ def evalx(test_dataloader, faster_rcnn, test_num=10000):
         gt_difficults_ = gt_difficults_[0].numpy()
         img_info_ = img_info_[0].numpy()
 
-        #debug("imgs_", imgs_)  
-        #debug("img_info_", img_info_)
-
         # run
         roi_cls_locs, roi_scores, rois, roi_indices = faster_rcnn.inference(imgs_, img_info_)
 
         # postprodess
         pred_bboxes_, pred_labels_, pred_scores_  = postprocess(imgs_, \
                                                 roi_cls_locs, roi_scores, rois, roi_indices)
-    
-        print(pred_bboxes_)
-        print(gt_bboxes_)
 
         gt_bboxes.append(gt_bboxes_)
         gt_labels.append(gt_labels_)
